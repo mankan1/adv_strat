@@ -22,7 +22,7 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
   const [loading, setLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [selectedOpp, setSelectedOpp] = useState(null);
-  const [modalTab, setModalTab] = useState('details'); // 'details' or 'trade'
+  const [modalTab, setModalTab] = useState('details');
   const [filters, setFilters] = useState({
     minProbability: 70,
     maxRisk: 500,
@@ -32,23 +32,21 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
   });
   const [scanProgress, setScanProgress] = useState(0);
   const [scanStatus, setScanStatus] = useState('');
-  const [activeTab, setActiveTab] = useState('high'); // 'high', 'medium', 'low', 'near-miss'
+  const [activeTab, setActiveTab] = useState('high');
   const [scanAnim] = useState(new Animated.Value(0));
 
-  // Popular symbols to scan (reduced for rate limiting)
-  // const symbolsToScan = ['SPY', 'AAPL', 'QQQ', 'MSFT', 'NVDA', 'TSLA', 'GOOGL', 'AMZN']; // Just 3 for testing
+  // const symbolsToScan = ['SPY', 'AAPL', 'QQQ'];
   const symbolsToScan = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'GOOGL', 'AMZN',//];
         "SOXS", "OCG", "YCBD", "NVDA", "CGC", "BBAI", "TQQQ", "SOXL", "WOK", "TZA", "PLUG", "SPY", "ASST", "TSLL", "RIVN", "AVGO", "TSLA", "TSLS", "MSOS", "ONDS", "INTC", "TLRY",
 
         "ATPC", "SLV", "QQQ", "IQ", "TNYA", "JDST", "XLF", "BEAT", "FRMI", "TE", "KAVL", "IWM", "SQQQ", "ASBP", "ORCL", "SOFI", "VIVK", "BMNR", "PFE", "ZDGE", "DNN", "OPEN", "NFLX",
+        ];
+        // "HPE", "F", "AAL", "PLTD", "IBIT", "ETHA", "TLT", "KVUE", "WBD", "HYG", "QID", "WULF", "UGRO", "MARA", "PLTR", "RR", "BMNU", "BYND", "VALE", "SPDN", "BAC", "UVIX", "AAPL",
 
-        "HPE", "F", "AAL", "PLTD", "IBIT", "ETHA", "TLT", "KVUE", "WBD", "HYG", "QID", "WULF", "UGRO", "MARA", "PLTR", "RR", "BMNU", "BYND", "VALE", "SPDN", "BAC", "UVIX", "AAPL",
+        // "LQD", "ACHR", "APLT", "SNAP", "CLSK", "NVD", "BITF", "IVP", "AMD", "FNGD", "NU", "GOGL", "AMZN", "IREN", "IRBT", "RZLT", "CRWV", "BTG", "BITO", "T", "NCI", "CVE", "RIG",
 
-        "LQD", "ACHR", "APLT", "SNAP", "CLSK", "NVD", "BITF", "IVP", "AMD", "FNGD", "NU", "GOGL", "AMZN", "IREN", "IRBT", "RZLT", "CRWV", "BTG", "BITO", "T", "NCI", "CVE", "RIG",
+        // "RKLB", "QBTS", "XLE", "NIO", "RWM", "MISL", "HOOD", "CIFR", "PL"];
 
-        "RKLB", "QBTS", "XLE", "NIO", "RWM", "MISL", "HOOD", "CIFR", "PL"];
-
-  // Strategy definitions
   const strategies = [
     {
       id: 'high-iv-credit',
@@ -97,7 +95,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     }
   ];
 
-  // Categorize opportunities by probability
   const categorizeOpportunities = (allOpportunities) => {
     const highProb = [];
     const mediumProb = [];
@@ -105,7 +102,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     const nearMiss = [];
 
     allOpportunities.forEach(opp => {
-      // Check if it's a near miss (missed high prob by small margin)
       const isNearMiss = (opp.probability >= 68 && opp.probability < 70) ||
                         (opp.rewardRiskRatio >= 1.8 && opp.rewardRiskRatio < 2) ||
                         (opp.score >= 75 && opp.score < 80);
@@ -125,7 +121,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     return { highProb, mediumProb, lowProb, nearMiss };
   };
 
-  // Get reason why it's a near miss
   const getNearMissReason = (opp) => {
     const reasons = [];
     
@@ -141,21 +136,15 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
       reasons.push(`Overall score near threshold (${opp.score} vs 80)`);
     }
     
-    if (opp.maxLoss > 500 && opp.maxLoss <= 600) {
-      reasons.push(`Slightly above max loss threshold ($${opp.maxLoss} vs $500)`);
-    }
-    
     return reasons.join(', ');
   };
 
-  // Enhanced analyzeSymbol function
   const analyzeSymbol = async (symbol, quote, options, marketData) => {
     const allOpportunities = [];
     const currentPrice = quote.last;
     
     if (!options || options.length === 0) return allOpportunities;
     
-    // Group options by expiration
     const expirations = {};
     options.forEach(option => {
       if (!expirations[option.expiration]) {
@@ -164,24 +153,18 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
       expirations[option.expiration].push(option);
     });
     
-    // Analyze each expiration
     for (const [expiration, expOptions] of Object.entries(expirations)) {
       const daysToExpiry = Math.ceil((new Date(expiration) - new Date()) / (1000 * 60 * 60 * 24));
-      
-      // Skip if outside filter range (but keep for analysis)
       const withinRange = daysToExpiry >= filters.expiryDays[0] && daysToExpiry <= filters.expiryDays[1];
       
-      // Separate calls and puts
       const calls = expOptions.filter(o => o.type === 'call');
       const puts = expOptions.filter(o => o.type === 'put');
       
       if (calls.length === 0 || puts.length === 0) continue;
       
-      // Calculate average IV and IV percentile
       const avgIV = expOptions.reduce((sum, o) => sum + (o.iv || 0), 0) / expOptions.length;
       const ivPercentile = Math.min(95, avgIV * 100);
       
-      // Generate opportunities with varying probabilities
       const generatedOpportunities = generateOpportunitiesByProbability(
         symbol, 
         expiration, 
@@ -200,39 +183,35 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     return allOpportunities;
   };
 
-  // Generate opportunities across probability spectrum
   const generateOpportunitiesByProbability = (symbol, expiration, daysToExpiry, currentPrice, calls, puts, avgIV, ivPercentile, withinRange) => {
     const opportunities = [];
     
-    // 1. HIGH PROBABILITY OPPORTUNITIES (70%+)
     if (withinRange && avgIV > 0.35) {
-      // Iron Condor - High IV, wide strikes
-      const shortCall = findStrike(calls, currentPrice * 1.03); // 3% OTM
-      const longCall = findStrike(calls, currentPrice * 1.05); // 5% OTM
-      const shortPut = findStrike(puts, currentPrice * 0.97); // 3% OTM
-      const longPut = findStrike(puts, currentPrice * 0.95); // 5% OTM
+      const shortCall = findStrike(calls, currentPrice * 1.03);
+      const longCall = findStrike(calls, currentPrice * 1.05);
+      const shortPut = findStrike(puts, currentPrice * 0.97);
+      const longPut = findStrike(puts, currentPrice * 0.95);
       
       if (shortCall && longCall && shortPut && longPut) {
         const credit = (shortCall.bid + shortPut.bid) - (longCall.ask + longPut.ask);
         const width = Math.abs(shortCall.strike - longCall.strike);
         const maxLoss = (width * 100) - credit;
-        const probability = Math.min(85, 75 + (avgIV * 20)); // Higher IV = higher prob for credit spreads
+        const probability = Math.min(85, 75 + (avgIV * 20));
         
         opportunities.push(createOpportunity(
           symbol, 'Iron Condor', 'credit-spread', expiration, daysToExpiry,
           credit, maxLoss, width, probability, avgIV,
           { shortCall: shortCall.strike, longCall: longCall.strike, shortPut: shortPut.strike, longPut: longPut.strike },
           { delta: 0.03, theta: 0.22, vega: -0.10 },
-          'High IV environment with wide strike placement'
+          'High IV environment with wide strike placement',
+          currentPrice
         ));
       }
     }
     
-    // 2. MEDIUM PROBABILITY OPPORTUNITIES (60-69%)
     if (withinRange) {
-      // Bull Call Spread - Medium probability
-      const longCall = findStrike(calls, currentPrice); // ATM
-      const shortCall = findStrike(calls, currentPrice * 1.02); // 2% OTM
+      const longCall = findStrike(calls, currentPrice);
+      const shortCall = findStrike(calls, currentPrice * 1.02);
       
       if (longCall && shortCall) {
         const debit = longCall.ask - shortCall.bid;
@@ -245,11 +224,11 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           debit, debit, maxProfit, probability, avgIV,
           { longCall: longCall.strike, shortCall: shortCall.strike },
           { delta: 0.35, theta: -0.12, vega: 0.08 },
-          'Moderate IV with directional bias'
+          'Moderate IV with directional bias',
+          currentPrice
         ));
       }
       
-      // Bear Put Spread
       const longPut = findStrike(puts, currentPrice);
       const shortPut = findStrike(puts, currentPrice * 0.98);
       
@@ -264,14 +243,13 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           debit, debit, maxProfit, probability, avgIV,
           { longPut: longPut.strike, shortPut: shortPut.strike },
           { delta: -0.35, theta: -0.11, vega: 0.07 },
-          'Downside protection with moderate probability'
+          'Downside protection with moderate probability',
+          currentPrice
         ));
       }
     }
     
-    // 3. LOW PROBABILITY OPPORTUNITIES (50-59%) - Higher risk, higher reward
     if (daysToExpiry <= 14) {
-      // Naked Put - Higher risk, lower probability
       const putStrike = findStrike(puts, currentPrice * 0.95);
       if (putStrike) {
         const credit = putStrike.bid;
@@ -282,11 +260,11 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           credit, 'Unlimited', credit, probability, avgIV,
           { strike: putStrike.strike, type: 'put' },
           { delta: -0.20, theta: -0.25, vega: 0.05 },
-          'High premium but unlimited risk'
+          'High premium but unlimited risk',
+          currentPrice
         ));
       }
       
-      // Straddle - Low probability, high volatility play
       const atmCall = findStrike(calls, currentPrice);
       const atmPut = findStrike(puts, currentPrice);
       
@@ -299,14 +277,13 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           debit, debit, 'Unlimited', probability, avgIV,
           { callStrike: atmCall.strike, putStrike: atmPut.strike },
           { delta: 0, theta: -0.35, vega: 0.25 },
-          'Low IV, expecting big move'
+          'Low IV, expecting big move',
+          currentPrice
         ));
       }
     }
     
-    // 4. NEAR MISS OPPORTUNITIES (just below thresholds)
     if (withinRange) {
-      // Near miss Iron Condor
       const shortCall = findStrike(calls, currentPrice * 1.02);
       const longCall = findStrike(calls, currentPrice * 1.035);
       const shortPut = findStrike(puts, currentPrice * 0.98);
@@ -316,14 +293,15 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
         const credit = (shortCall.bid + shortPut.bid) - (longCall.ask + longPut.ask);
         const width = Math.abs(shortCall.strike - longCall.strike);
         const maxLoss = (width * 100) - credit;
-        const probability = 68; // Just below threshold
+        const probability = 68;
         
         opportunities.push(createOpportunity(
           symbol, 'Iron Condor (Near Miss)', 'credit-spread', expiration, daysToExpiry,
           credit, maxLoss, credit, probability, avgIV,
           { shortCall: shortCall.strike, longCall: longCall.strike, shortPut: shortPut.strike, longPut: longPut.strike },
           { delta: 0.05, theta: 0.20, vega: -0.12 },
-          'Narrow strikes, probability just below threshold'
+          'Narrow strikes, probability just below threshold',
+          currentPrice
         ));
       }
     }
@@ -331,15 +309,13 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     return opportunities;
   };
 
-  // Helper function to find strike
   const findStrike = (options, targetPrice) => {
     return options.find(o => Math.abs(o.strike - targetPrice) / targetPrice < 0.02) || options[0];
   };
 
-  // Helper to create opportunity object
   const createOpportunity = (symbol, strategy, type, expiration, daysToExpiry, 
                             cost, maxLoss, maxProfit, probability, avgIV, 
-                            setup, greeks, reason) => {
+                            setup, greeks, reason, currentPrice) => {
     const rewardRiskRatio = typeof maxLoss === 'number' && maxLoss > 0 
       ? (typeof maxProfit === 'number' ? maxProfit / maxLoss : 3)
       : 'N/A';
@@ -362,12 +338,12 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
       setup,
       greeks,
       reason,
+      currentPrice,
       score: Math.round(score),
       timestamp: new Date().toISOString()
     };
   };
 
-  // Enhanced scoring function
   const calculateScore = (probability, rewardRatio, daysToExpiry, iv) => {
     const probScore = probability * 0.35;
     const ratioScore = (typeof rewardRatio === 'number' ? Math.min(10, rewardRatio) * 5.5 : 30);
@@ -377,7 +353,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     return Math.min(100, probScore + ratioScore + timeScore + ivScore);
   };
 
-  // Scan for opportunities
   const scanOpportunities = async () => {
     setLoading(true);
     setScanning(true);
@@ -387,18 +362,15 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     try {
       const allOpportunities = [];
       
-      // Scan each symbol with delay to avoid rate limits
       for (let i = 0; i < symbolsToScan.length; i++) {
         const symbol = symbolsToScan[i];
         setScanStatus(`Analyzing ${symbol} (${i+1}/${symbolsToScan.length})...`);
         
         try {
-          // Add delay between symbols (2 seconds)
           if (i > 0) {
             await new Promise(resolve => setTimeout(resolve, 2000));
           }
           
-          // Get quote
           const quoteResponse = await fetch(`${backendUrl}/market/quote/${symbol}`);
           if (!quoteResponse.ok) {
             console.log(`Skipping ${symbol}: Quote error ${quoteResponse.status}`);
@@ -411,8 +383,7 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
             continue;
           }
           
-          // Get options chain
-          await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay
+          await new Promise(resolve => setTimeout(resolve, 1000));
           const optionsResponse = await fetch(`${backendUrl}/options/chain/${symbol}`);
           if (!optionsResponse.ok) {
             console.log(`Skipping ${symbol}: Options error ${optionsResponse.status}`);
@@ -425,11 +396,9 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
             continue;
           }
           
-          // Get market overview for context
           const marketResponse = await fetch(`${backendUrl}/market/overview`);
           const marketData = marketResponse.ok ? await marketResponse.json() : {};
           
-          // Analyze symbol
           const symbolOpportunities = await analyzeSymbol(
             symbol, 
             quoteData, 
@@ -446,10 +415,8 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
         setScanProgress((i + 1) / symbolsToScan.length * 100);
       }
       
-      // Categorize opportunities
       const { highProb, mediumProb, lowProb, nearMiss } = categorizeOpportunities(allOpportunities);
       
-      // Sort each category by score
       const sortByScore = (a, b) => b.score - a.score;
       setOpportunities(highProb.sort(sortByScore));
       setMediumProbOpportunities(mediumProb.sort(sortByScore));
@@ -460,7 +427,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
       
     } catch (error) {
       Alert.alert('Scan Error', `Failed to scan opportunities: ${error.message}`);
-      // Generate sample data for demo
       generateSampleData();
     } finally {
       setLoading(false);
@@ -471,69 +437,72 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     }
   };
 
-  // Generate sample data for demo
   const generateSampleData = () => {
-    // High probability samples
     const highProb = [
       createOpportunity('SPY', 'Iron Condor', 'credit-spread', '2025-12-19', 5,
         2.45, 7.55, 2.45, 82, 0.75,
         { shortCall: 485, longCall: 490, shortPut: 465, longPut: 460 },
         { delta: 0.05, theta: 0.28, vega: -0.12 },
-        'High IV (75th percentile), low Delta exposure'
+        'High IV (75th percentile), low Delta exposure',
+        681.76
       ),
       createOpportunity('AAPL', 'Bull Call Spread', 'debit-spread', '2025-12-26', 12,
         1.85, 1.85, 3.15, 78, 0.42,
         { longCall: 195, shortCall: 200 },
         { delta: 0.48, theta: -0.07, vega: 0.14 },
-        'Low IV, positive Delta, earnings catalyst'
+        'Low IV, positive Delta, earnings catalyst',
+        195.42
       )
     ];
     
-    // Medium probability samples
     const mediumProb = [
       createOpportunity('NVDA', 'Bear Put Spread', 'debit-spread', '2025-12-19', 5,
         2.10, 2.10, 2.90, 65, 0.55,
         { longPut: 525, shortPut: 520 },
         { delta: -0.40, theta: -0.15, vega: 0.10 },
-        'Moderate IV, technical resistance'
+        'Moderate IV, technical resistance',
+        530.25
       ),
       createOpportunity('QQQ', 'Credit Spread', 'credit-spread', '2025-12-26', 12,
         1.50, 3.50, 1.50, 68, 0.60,
         { shortCall: 435, longCall: 440 },
         { delta: 0.25, theta: 0.18, vega: -0.08 },
-        'High IV but narrow spread'
+        'High IV but narrow spread',
+        432.15
       )
     ];
     
-    // Low probability samples
     const lowProb = [
       createOpportunity('TSLA', 'Long Straddle', 'volatility', '2025-12-19', 5,
         15.50, 15.50, 'Unlimited', 58, 0.35,
         { callStrike: 250, putStrike: 250 },
         { delta: 0, theta: -0.40, vega: 0.30 },
-        'Low IV, expecting earnings move'
+        'Low IV, expecting earnings move',
+        248.75
       ),
       createOpportunity('META', 'Naked Put', 'theta-decay', '2025-12-12', 3,
         3.25, 'Unlimited', 3.25, 52, 0.68,
         { strike: 475, type: 'put' },
         { delta: -0.25, theta: -0.35, vega: 0.06 },
-        'High premium but unlimited risk'
+        'High premium but unlimited risk',
+        480.50
       )
     ];
     
-    // Near miss samples
     const nearMiss = [
       createOpportunity('AMD', 'Iron Condor', 'credit-spread', '2025-12-19', 5,
         1.85, 8.15, 1.85, 69, 0.72,
         { shortCall: 155, longCall: 160, shortPut: 140, longPut: 135 },
         { delta: 0.04, theta: 0.22, vega: -0.11 },
-        'Probability just below 70% threshold'
+        'Probability just below 70% threshold',
+        147.80
       ),
       createOpportunity('MSFT', 'Bull Call Spread', 'debit-spread', '2025-12-26', 12,
         2.40, 2.40, 3.60, 71, 0.38,
         { longCall: 420, shortCall: 425 },
         { delta: 0.42, theta: -0.09, vega: 0.12 },
-        'Reward/Risk ratio 1.8:1 (below 2:1 threshold)'
+        'Reward/Risk ratio 1.8:1 (below 2:1 threshold)',
+        418.90
       )
     ];
     
@@ -543,7 +512,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     setNearMissOpportunities(nearMiss);
   };
 
-  // Get opportunities for current tab
   const getCurrentOpportunities = () => {
     switch(activeTab) {
       case 'high': return opportunities;
@@ -554,7 +522,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     }
   };
 
-  // Get tab title
   const getTabTitle = () => {
     switch(activeTab) {
       case 'high': return `High Probability (${opportunities.length})`;
@@ -565,7 +532,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     }
   };
 
-  // Get tab description
   const getTabDescription = () => {
     switch(activeTab) {
       case 'high': return '70%+ probability, best risk/reward';
@@ -576,7 +542,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     }
   };
 
-  // ========== COMPLETE TRADE DETAILS RENDERER ==========
   const renderTradeDetails = (opp) => {
     if (!opp || !opp.setup) return null;
     
@@ -590,19 +555,24 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     let maxProfit = opp.maxProfit;
     let maxLoss = opp.maxLoss;
     let breakevenPoints = [];
+    let currentStockPrice = opp.currentPrice || 0;
     
-    // Determine trade structure based on strategy
     switch(opp.strategy) {
       case 'Iron Condor':
       case 'Iron Condor (Near Miss)':
         const { shortCall, longCall, shortPut, longPut } = opp.setup;
+        const putDistance = ((currentStockPrice - shortPut) / currentStockPrice * 100).toFixed(1);
+        const callDistance = ((shortCall - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        
         tradeInstructions = [
+          `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
+          '',
           'SELL Put Spread:',
-          `  • SELL Put @ $${shortPut} strike`,
+          `  • SELL Put @ $${shortPut} strike (${putDistance}% OTM)`,
           `  • BUY Put @ $${longPut} strike (lower strike)`,
           '',
           'SELL Call Spread:',
-          `  • SELL Call @ $${shortCall} strike`,
+          `  • SELL Call @ $${shortCall} strike (${callDistance}% OTM)`,
           `  • BUY Call @ $${longCall} strike (higher strike)`,
           '',
           `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
@@ -610,17 +580,16 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
         ];
         
         optionLegs = [
-          { action: 'SELL', type: 'PUT', strike: shortPut, premium: 'Credit' },
-          { action: 'BUY', type: 'PUT', strike: longPut, premium: 'Debit' },
-          { action: 'SELL', type: 'CALL', strike: shortCall, premium: 'Credit' },
-          { action: 'BUY', type: 'CALL', strike: longCall, premium: 'Debit' }
+          { action: 'SELL', type: 'PUT', strike: shortPut, premium: 'Credit', distance: `${putDistance}% OTM` },
+          { action: 'BUY', type: 'PUT', strike: longPut, premium: 'Debit', distance: '' },
+          { action: 'SELL', type: 'CALL', strike: shortCall, premium: 'Credit', distance: `${callDistance}% OTM` },
+          { action: 'BUY', type: 'CALL', strike: longCall, premium: 'Debit', distance: '' }
         ];
         
-        // Calculate breakevens for Iron Condor
         const netCredit = parseFloat(opp.cost);
         breakevenPoints = [
-          `Put side: $${shortPut} - $${netCredit.toFixed(2)} = $${(shortPut - netCredit).toFixed(2)}`,
-          `Call side: $${shortCall} + $${netCredit.toFixed(2)} = $${(shortCall + netCredit).toFixed(2)}`
+          `Put side: $${shortPut} - $${netCredit.toFixed(2)} = $${(shortPut - netCredit).toFixed(2)} (${((shortPut - netCredit - currentStockPrice) / currentStockPrice * 100).toFixed(1)}% from current)`,
+          `Call side: $${shortCall} + $${netCredit.toFixed(2)} = $${(shortCall + netCredit).toFixed(2)} (${((shortCall + netCredit - currentStockPrice) / currentStockPrice * 100).toFixed(1)}% from current)`
         ];
         break;
         
@@ -631,31 +600,43 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
         const shortStrike = isBull ? opp.setup.shortCall : opp.setup.shortPut;
         const optionType = isBull ? 'CALL' : 'PUT';
         
+        const longDistance = isBull 
+          ? ((longStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1)
+          : ((currentStockPrice - longStrike) / currentStockPrice * 100).toFixed(1);
+        const shortDistance = isBull
+          ? ((shortStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1)
+          : ((currentStockPrice - shortStrike) / currentStockPrice * 100).toFixed(1);
+        
         tradeInstructions = [
+          `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
+          '',
           `${isBull ? 'BULLISH' : 'BEARISH'} VERTICAL SPREAD:`,
-          `1. BUY ${optionType} @ $${longStrike} strike`,
-          `2. SELL ${optionType} @ $${shortStrike} strike`,
+          `1. BUY ${optionType} @ $${longStrike} strike (${isBull ? longDistance + '% ITM' : longDistance + '% OTM'})`,
+          `2. SELL ${optionType} @ $${shortStrike} strike (${isBull ? shortDistance + '% OTM' : shortDistance + '% ITM'})`,
           '',
           `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
           `Net Debit: $${opp.cost} per contract`
         ];
         
         optionLegs = [
-          { action: 'BUY', type: optionType, strike: longStrike, premium: 'Debit' },
-          { action: 'SELL', type: optionType, strike: shortStrike, premium: 'Credit' }
+          { action: 'BUY', type: optionType, strike: longStrike, premium: 'Debit', distance: `${longDistance}% ${isBull ? 'ITM' : 'OTM'}` },
+          { action: 'SELL', type: optionType, strike: shortStrike, premium: 'Credit', distance: `${shortDistance}% ${isBull ? 'OTM' : 'ITM'}` }
         ];
         
-        // Calculate breakevens
         const debit = parseFloat(opp.cost);
         if (isBull) {
+          const breakevenPrice = longStrike + debit;
+          const breakevenDistance = ((breakevenPrice - currentStockPrice) / currentStockPrice * 100).toFixed(1);
           breakevenPoints = [
-            `Breakeven: $${longStrike} + $${debit.toFixed(2)} = $${(longStrike + debit).toFixed(2)}`,
-            `Profit Zone: Stock between $${(longStrike + debit).toFixed(2)} and $${shortStrike}`
+            `Breakeven: $${longStrike} + $${debit.toFixed(2)} = $${breakevenPrice.toFixed(2)} (${breakevenDistance}% from current)`,
+            `Profit Zone: Stock between $${breakevenPrice.toFixed(2)} and $${shortStrike}`
           ];
         } else {
+          const breakevenPrice = longStrike - debit;
+          const breakevenDistance = ((currentStockPrice - breakevenPrice) / currentStockPrice * 100).toFixed(1);
           breakevenPoints = [
-            `Breakeven: $${longStrike} - $${debit.toFixed(2)} = $${(longStrike - debit).toFixed(2)}`,
-            `Profit Zone: Stock between $${shortStrike} and $${(longStrike - debit).toFixed(2)}`
+            `Breakeven: $${longStrike} - $${debit.toFixed(2)} = $${breakevenPrice.toFixed(2)} (${breakevenDistance}% from current)`,
+            `Profit Zone: Stock between $${shortStrike} and $${breakevenPrice.toFixed(2)}`
           ];
         }
         break;
@@ -666,9 +647,15 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
         const isCall = opp.strategy.includes('Call');
         const strike = opp.setup.strike;
         
+        const strikeDistance = isCall
+          ? ((strike - currentStockPrice) / currentStockPrice * 100).toFixed(1)
+          : ((currentStockPrice - strike) / currentStockPrice * 100).toFixed(1);
+        
         tradeInstructions = [
+          `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
+          '',
           'NAKED OPTION SALE:',
-          `SELL ${isCall ? 'CALL' : 'PUT'} @ $${strike} strike`,
+          `SELL ${isCall ? 'CALL' : 'PUT'} @ $${strike} strike (${strikeDistance}% OTM)`,
           '',
           `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
           `Credit Received: $${opp.cost} per contract`,
@@ -677,16 +664,19 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
         ];
         
         optionLegs = [
-          { action: 'SELL', type: isCall ? 'CALL' : 'PUT', strike: strike, premium: 'Credit' }
+          { action: 'SELL', type: isCall ? 'CALL' : 'PUT', strike: strike, premium: 'Credit', distance: `${strikeDistance}% OTM` }
         ];
         
-        // Breakeven for short option
         const credit = parseFloat(opp.cost);
         if (isCall) {
-          breakevenPoints = [`Breakeven: Stock at $${(strike + credit).toFixed(2)}`];
+          const breakevenPrice = strike + credit;
+          const breakevenDistance = ((breakevenPrice - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+          breakevenPoints = [`Breakeven: Stock at $${breakevenPrice.toFixed(2)} (${breakevenDistance}% from current)`];
           maxLoss = 'Unlimited (stock above breakeven)';
         } else {
-          breakevenPoints = [`Breakeven: Stock at $${(strike - credit).toFixed(2)}`];
+          const breakevenPrice = strike - credit;
+          const breakevenDistance = ((currentStockPrice - breakevenPrice) / currentStockPrice * 100).toFixed(1);
+          breakevenPoints = [`Breakeven: Stock at $${breakevenPrice.toFixed(2)} (${breakevenDistance}% from current)`];
           maxLoss = `$${strike} (if stock goes to $0)`;
         }
         break;
@@ -694,10 +684,17 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
       case 'Long Straddle':
         const { callStrike, putStrike } = opp.setup;
         
+        // const callDistance = ((callStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        // const putDistance = ((currentStockPrice - putStrike) / currentStockPrice * 100).toFixed(1);
+        callDistance = ((callStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        putDistance = ((currentStockPrice - putStrike) / currentStockPrice * 100).toFixed(1);
+        
         tradeInstructions = [
+          `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
+          '',
           'LONG STRADDLE:',
-          `1. BUY CALL @ $${callStrike} strike`,
-          `2. BUY PUT @ $${putStrike} strike`,
+          `1. BUY CALL @ $${callStrike} strike (${Math.abs(callDistance)}% ${parseFloat(callDistance) > 0 ? 'OTM' : 'ITM'})`,
+          `2. BUY PUT @ $${putStrike} strike (${Math.abs(putDistance)}% ${parseFloat(putDistance) > 0 ? 'OTM' : 'ITM'})`,
           '',
           `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
           `Total Debit: $${opp.cost} per contract`,
@@ -706,15 +703,19 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
         ];
         
         optionLegs = [
-          { action: 'BUY', type: 'CALL', strike: callStrike, premium: 'Debit' },
-          { action: 'BUY', type: 'PUT', strike: putStrike, premium: 'Debit' }
+          { action: 'BUY', type: 'CALL', strike: callStrike, premium: 'Debit', distance: `${Math.abs(callDistance)}% ${parseFloat(callDistance) > 0 ? 'OTM' : 'ITM'}` },
+          { action: 'BUY', type: 'PUT', strike: putStrike, premium: 'Debit', distance: `${Math.abs(putDistance)}% ${parseFloat(putDistance) > 0 ? 'OTM' : 'ITM'}` }
         ];
         
-        // Breakevens for straddle
         const totalDebit = parseFloat(opp.cost);
+        const upperBreakeven = callStrike + totalDebit;
+        const lowerBreakeven = putStrike - totalDebit;
+        const upperDistance = ((upperBreakeven - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        const lowerDistance = ((currentStockPrice - lowerBreakeven) / currentStockPrice * 100).toFixed(1);
+        
         breakevenPoints = [
-          `Upper Breakeven: $${callStrike} + $${totalDebit.toFixed(2)} = $${(callStrike + totalDebit).toFixed(2)}`,
-          `Lower Breakeven: $${putStrike} - $${totalDebit.toFixed(2)} = $${(putStrike - totalDebit).toFixed(2)}`
+          `Upper Breakeven: $${callStrike} + $${totalDebit.toFixed(2)} = $${upperBreakeven.toFixed(2)} (${upperDistance}% from current)`,
+          `Lower Breakeven: $${putStrike} - $${totalDebit.toFixed(2)} = $${lowerBreakeven.toFixed(2)} (${lowerDistance}% from current)`
         ];
         maxProfit = 'Unlimited (in either direction)';
         break;
@@ -722,23 +723,29 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
       case 'Credit Spread':
         const { shortCall: creditShortCall, longCall: creditLongCall } = opp.setup;
         
+        const shortCallDistance = ((creditShortCall - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        const longCallDistance = ((creditLongCall - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        
         tradeInstructions = [
+          `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
+          '',
           'BEAR CALL SPREAD:',
-          `1. SELL CALL @ $${creditShortCall} strike`,
-          `2. BUY CALL @ $${creditLongCall} strike`,
+          `1. SELL CALL @ $${creditShortCall} strike (${shortCallDistance}% OTM)`,
+          `2. BUY CALL @ $${creditLongCall} strike (${longCallDistance}% OTM)`,
           '',
           `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
           `Net Credit: $${opp.cost} per contract`
         ];
         
         optionLegs = [
-          { action: 'SELL', type: 'CALL', strike: creditShortCall, premium: 'Credit' },
-          { action: 'BUY', type: 'CALL', strike: creditLongCall, premium: 'Debit' }
+          { action: 'SELL', type: 'CALL', strike: creditShortCall, premium: 'Credit', distance: `${shortCallDistance}% OTM` },
+          { action: 'BUY', type: 'CALL', strike: creditLongCall, premium: 'Debit', distance: `${longCallDistance}% OTM` }
         ];
         
-        // Breakeven for bear call spread
         const bearCredit = parseFloat(opp.cost);
-        breakevenPoints = [`Breakeven: Stock at $${(creditShortCall + bearCredit).toFixed(2)}`];
+        const bearBreakeven = creditShortCall + bearCredit;
+        const bearDistance = ((bearBreakeven - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        breakevenPoints = [`Breakeven: Stock at $${bearBreakeven.toFixed(2)} (${bearDistance}% from current)`];
         break;
     }
     
@@ -746,7 +753,11 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
       <ScrollView style={styles.tradeDetailsContainer}>
         <Text style={styles.tradeDetailsTitle}>📋 EXACT TRADE TO MAKE</Text>
         
-        {/* Trade Summary */}
+        <View style={styles.currentPriceBanner}>
+          <Text style={styles.currentPriceLabel}>Current {opp.symbol} Price:</Text>
+          <Text style={styles.currentPriceValue}>${currentStockPrice.toFixed(2)}</Text>
+        </View>
+        
         <View style={styles.tradeSummary}>
           <View style={styles.tradeSummaryRow}>
             <Text style={styles.tradeSummaryLabel}>Strategy:</Text>
@@ -773,7 +784,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           </View>
         </View>
         
-        {/* Option Legs */}
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>📊 Option Legs:</Text>
           {optionLegs.map((leg, index) => (
@@ -794,7 +804,12 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
                   {leg.type}
                 </Text>
               </View>
-              <Text style={styles.legStrike}>${leg.strike}</Text>
+              <View style={styles.legStrikeContainer}>
+                <Text style={styles.legStrike}>${leg.strike}</Text>
+                {leg.distance ? (
+                  <Text style={styles.legDistance}>{leg.distance}</Text>
+                ) : null}
+              </View>
               <Text style={[
                 styles.legPremium,
                 leg.premium === 'Credit' ? styles.creditText : styles.debitText
@@ -805,7 +820,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           ))}
         </View>
         
-        {/* Trade Instructions */}
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>📝 Step-by-Step Instructions:</Text>
           {tradeInstructions.map((line, index) => (
@@ -815,7 +829,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           ))}
         </View>
         
-        {/* Risk/Reward */}
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>⚖️ Risk/Reward Analysis:</Text>
           
@@ -856,7 +869,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           </View>
         </View>
         
-        {/* Greeks Impact */}
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>📈 Greeks Analysis:</Text>
           
@@ -886,7 +898,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           </View>
         </View>
         
-        {/* Trade Management */}
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>🔄 Trade Management Rules:</Text>
           
@@ -927,7 +938,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           </View>
         </View>
         
-        {/* Broker Instructions */}
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>💻 How to Enter in Your Broker:</Text>
           <Text style={styles.brokerText}>1. Go to options chain for {opp.symbol}</Text>
@@ -938,7 +948,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           <Text style={styles.brokerText}>6. Review and submit order</Text>
         </View>
         
-        {/* Disclaimer */}
         <View style={styles.disclaimerContainer}>
           <Text style={styles.disclaimerText}>
             ⚠️ This is not financial advice. Trade at your own risk. 
@@ -949,7 +958,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     );
   };
 
-  // Render probability tabs
   const renderProbabilityTabs = () => {
     const tabs = [
       { id: 'high', label: 'High', count: opportunities.length, color: '#10B981' },
@@ -997,10 +1005,26 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     );
   };
 
-  // Render opportunity card
   const renderOpportunityCard = (opp) => {
     const strategyColor = getStrategyColor(opp.type);
     const riskColor = getRiskColor(opp.probability);
+    
+    let distanceInfo = '';
+    if (opp.currentPrice && opp.setup) {
+      if (opp.strategy.includes('Iron Condor')) {
+        const putDistance = ((opp.currentPrice - opp.setup.shortPut) / opp.currentPrice * 100).toFixed(1);
+        const callDistance = ((opp.setup.shortCall - opp.currentPrice) / opp.currentPrice * 100).toFixed(1);
+        distanceInfo = `Puts: ${putDistance}% OTM • Calls: ${callDistance}% OTM`;
+      } else if (opp.strategy.includes('Bull')) {
+        const longDistance = ((opp.setup.longCall - opp.currentPrice) / opp.currentPrice * 100).toFixed(1);
+        const shortDistance = ((opp.setup.shortCall - opp.currentPrice) / opp.currentPrice * 100).toFixed(1);
+        distanceInfo = `Long: ${longDistance}% ITM • Short: ${shortDistance}% OTM`;
+      } else if (opp.strategy.includes('Bear')) {
+        const longDistance = ((opp.currentPrice - opp.setup.longPut) / opp.currentPrice * 100).toFixed(1);
+        const shortDistance = ((opp.currentPrice - opp.setup.shortPut) / opp.currentPrice * 100).toFixed(1);
+        distanceInfo = `Long: ${longDistance}% ITM • Short: ${shortDistance}% OTM`;
+      }
+    }
     
     return (
       <TouchableOpacity
@@ -1026,7 +1050,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
           </View>
         </View>
         
-        {/* Add near miss indicator */}
         {activeTab === 'near-miss' && opp.nearMissReason && (
           <View style={styles.nearMissBadge}>
             <Text style={styles.nearMissText}>⚠️ {opp.nearMissReason}</Text>
@@ -1080,19 +1103,12 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
             </View>
           </View>
           
-          {/* Quick trade info */}
-          {opp.setup && (
-            <View style={styles.quickTradeInfo}>
-              <Text style={styles.quickTradeLabel}>Trade Setup:</Text>
-              <Text style={styles.quickTradeValue}>
-                {opp.strategy.includes('Iron Condor') ? 
-                  `Puts: $${opp.setup.shortPut}/${opp.setup.longPut} • Calls: $${opp.setup.shortCall}/${opp.setup.longCall}` :
-                 opp.strategy.includes('Spread') ? 
-                  `Strikes: $${Object.values(opp.setup)[0]}/${Object.values(opp.setup)[1]}` :
-                 opp.strategy.includes('Straddle') ?
-                  `Strike: $${opp.setup.callStrike}` :
-                  `Strike: $${opp.setup.strike}`}
-              </Text>
+          {opp.currentPrice && (
+            <View style={styles.currentPriceContainer}>
+              <Text style={styles.currentPriceLabel}>Current: ${opp.currentPrice.toFixed(2)}</Text>
+              {distanceInfo ? (
+                <Text style={styles.distanceLabel}>{distanceInfo}</Text>
+              ) : null}
             </View>
           )}
         </View>
@@ -1104,7 +1120,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     );
   };
 
-  // Get strategy color
   const getStrategyColor = (type) => {
     switch(type) {
       case 'credit-spread': return '#10B981';
@@ -1116,15 +1131,13 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     }
   };
 
-  // Get risk color based on probability
   const getRiskColor = (probability) => {
-    if (probability >= 70) return '#10B981'; // Green
-    if (probability >= 60) return '#F59E0B'; // Yellow
-    if (probability >= 50) return '#EF4444'; // Red
-    return '#6B7280'; // Gray
+    if (probability >= 70) return '#10B981';
+    if (probability >= 60) return '#F59E0B';
+    if (probability >= 50) return '#EF4444';
+    return '#6B7280';
   };
 
-  // Render opportunity detail modal
   const renderOpportunityModal = () => {
     if (!selectedOpp) return null;
     
@@ -1156,7 +1169,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
               </TouchableOpacity>
             </View>
             
-            {/* Modal Tabs */}
             <View style={styles.modalTabs}>
               <TouchableOpacity 
                 style={[styles.modalTab, modalTab === 'details' && styles.activeModalTab]}
@@ -1182,14 +1194,16 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
               </TouchableOpacity>
             </View>
             
-            {/* Modal Body */}
             <View style={styles.modalBody}>
               {modalTab === 'details' ? (
                 <ScrollView>
-                  {/* Your existing details view */}
                   <View style={styles.modalSection}>
                     <Text style={styles.modalSectionTitle}>Trade Details</Text>
                     <View style={styles.modalGrid}>
+                      <View style={styles.modalItem}>
+                        <Text style={styles.modalLabel}>Current Price</Text>
+                        <Text style={styles.modalValue}>${selectedOpp.currentPrice?.toFixed(2) || 'N/A'}</Text>
+                      </View>
                       <View style={styles.modalItem}>
                         <Text style={styles.modalLabel}>Expiration</Text>
                         <Text style={styles.modalValue}>{selectedOpp.expiration}</Text>
@@ -1235,7 +1249,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
                   )}
                 </ScrollView>
               ) : (
-                // Trade Setup View
                 renderTradeDetails(selectedOpp)
               )}
             </View>
@@ -1264,7 +1277,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
     );
   };
 
-  // Render scanning overlay
   const renderScanningOverlay = () => {
     if (!scanning) return null;
     
@@ -1305,7 +1317,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
 
   return (
     <View style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>🎯 Smart Options Opportunities</Text>
         <Text style={styles.subtitle}>
@@ -1313,7 +1324,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
         </Text>
       </View>
       
-      {/* Scan Button */}
       <TouchableOpacity 
         style={styles.scanButton}
         onPress={scanOpportunities}
@@ -1331,16 +1341,13 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
         )}
       </TouchableOpacity>
       
-      {/* Probability Tabs */}
       {renderProbabilityTabs()}
       
-      {/* Current Category Info */}
       <View style={styles.categoryInfo}>
         <Text style={styles.categoryTitle}>{getTabTitle()}</Text>
         <Text style={styles.categoryDescription}>{getTabDescription()}</Text>
       </View>
       
-      {/* Opportunities List */}
       <View style={styles.opportunitiesSection}>
         {getCurrentOpportunities().length === 0 ? (
           <View style={styles.emptyState}>
@@ -1369,7 +1376,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
         )}
       </View>
       
-      {/* Statistics Footer */}
       <View style={styles.statsFooter}>
         <View style={styles.statItem}>
           <Text style={styles.statValue}>{opportunities.length}</Text>
@@ -1389,7 +1395,6 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
         </View>
       </View>
       
-      {/* Modals */}
       {renderOpportunityModal()}
       {renderScanningOverlay()}
     </View>
@@ -1438,7 +1443,6 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.8)',
     fontSize: 12,
   },
-  // Tabs
   tabsContainer: {
     marginHorizontal: 15,
     marginBottom: 10,
@@ -1478,7 +1482,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
   },
-  // Category Info
   categoryInfo: {
     paddingHorizontal: 15,
     marginBottom: 10,
@@ -1493,24 +1496,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
   },
-  // Quick Trade Info in Card
-  quickTradeInfo: {
-    backgroundColor: '#f8f9fa',
+  currentPriceContainer: {
+    backgroundColor: '#f0f9ff',
     padding: 10,
     borderRadius: 8,
     marginTop: 10,
+    borderWidth: 1,
+    borderColor: '#e0f2fe',
   },
-  quickTradeLabel: {
-    fontSize: 11,
-    color: '#666',
+  currentPriceLabel: {
+    fontSize: 14,
+    color: '#0369a1',
+    fontWeight: '600',
     marginBottom: 4,
   },
-  quickTradeValue: {
+  distanceLabel: {
     fontSize: 12,
-    color: '#333',
-    fontWeight: '500',
+    color: '#666',
   },
-  // Near Miss Badge
   nearMissBadge: {
     backgroundColor: '#FEF3C7',
     padding: 8,
@@ -1524,7 +1527,6 @@ const styles = StyleSheet.create({
     color: '#92400E',
     fontWeight: '500',
   },
-  // Stats Footer
   statsFooter: {
     flexDirection: 'row',
     backgroundColor: 'white',
@@ -1546,7 +1548,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#666',
   },
-  // Opportunity Card Styles
   opportunitiesSection: {
     flex: 1,
     marginHorizontal: 15,
@@ -1681,7 +1682,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#f0f0f0',
   },
-  // ========== TRADE DETAILS STYLES ==========
   tradeDetailsContainer: {
     flex: 1,
     padding: 15,
@@ -1692,6 +1692,25 @@ const styles = StyleSheet.create({
     color: '#333',
     marginBottom: 20,
     textAlign: 'center',
+  },
+  currentPriceBanner: {
+    backgroundColor: '#667eea',
+    padding: 15,
+    borderRadius: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 15,
+  },
+  currentPriceLabel: {
+    fontSize: 16,
+    color: 'white',
+    fontWeight: '500',
+  },
+  currentPriceValue: {
+    fontSize: 24,
+    color: 'white',
+    fontWeight: 'bold',
   },
   sectionContainer: {
     backgroundColor: 'white',
@@ -1740,7 +1759,6 @@ const styles = StyleSheet.create({
   neutralText: {
     color: '#6B7280',
   },
-  // Option Legs
   optionLeg: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1781,11 +1799,19 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
   },
+  legStrikeContainer: {
+    flex: 1,
+    marginRight: 10,
+  },
   legStrike: {
     fontSize: 16,
     fontWeight: 'bold',
     color: '#333',
-    marginRight: 'auto',
+  },
+  legDistance: {
+    fontSize: 11,
+    color: '#666',
+    marginTop: 2,
   },
   legPremium: {
     fontSize: 14,
@@ -1797,14 +1823,12 @@ const styles = StyleSheet.create({
   debitText: {
     color: '#EF4444',
   },
-  // Instructions
   instructionLine: {
     fontSize: 14,
     color: '#333',
     marginBottom: 8,
     lineHeight: 20,
   },
-  // Risk/Reward
   riskRewardGrid: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1855,7 +1879,6 @@ const styles = StyleSheet.create({
     color: '#333',
     marginBottom: 5,
   },
-  // Greeks Impact
   greekImpact: {
     marginBottom: 15,
   },
@@ -1870,7 +1893,6 @@ const styles = StyleSheet.create({
     color: '#666',
     lineHeight: 20,
   },
-  // Management Rules
   managementRule: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -1895,14 +1917,12 @@ const styles = StyleSheet.create({
     color: '#666',
     lineHeight: 20,
   },
-  // Broker Instructions
   brokerText: {
     fontSize: 14,
     color: '#333',
     marginBottom: 8,
     lineHeight: 20,
   },
-  // Disclaimer
   disclaimerContainer: {
     backgroundColor: '#FEF3C7',
     padding: 15,
@@ -1917,7 +1937,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 16,
   },
-  // ========== MODAL STYLES ==========
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
@@ -2044,7 +2063,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  // Scanning Overlay
   scanOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
