@@ -35,12 +35,47 @@ const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
   const [activeTab, setActiveTab] = useState('high');
   const [scanAnim] = useState(new Animated.Value(0));
 
-  // const symbolsToScan = ['SPY', 'AAPL', 'QQQ'];
-  const symbolsToScan = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'GOOGL', 'AMZN',//];
-        "SOXS", "OCG", "YCBD", "NVDA", "CGC", "BBAI", "TQQQ", "SOXL", "WOK", "TZA", "PLUG", "SPY", "ASST", "TSLL", "RIVN", "AVGO", "TSLA", "TSLS", "MSOS", "ONDS", "INTC", "TLRY",
+  const symbolsToScan = 
+    // "WOK", "MASK", "OCG", "SOXS", "IRBT", "TSLL", "ASBP", "MIST", "CGC", "TSLA", "NVDA",
+    // "ASST", "YCBD", "ONDS", "TQQQ", "IMG", "RADX", "SOXL", "PFSA", "ATPC", "OPEN",
+    // "BBAI", "SPY", "TSLS", "BMNU", "SLV", "IREN", "AMCI", "AVGO", "PLUG", "ETHA",
+    // "ORCL", "BMNR", "TLRY", "BITF", "IBIT", "KYTX", "CLSK", "CIFR", "INTC", "RIVN",
+    // "BYND", "SQQQ", "BURU", "QQQ", "APLD", "MSOS", "TSLQ", "TZA", "IRE", "RKLB",
+    // "IVP", "MSTX", "PFE", "QIPT", "WULF", "MARA", "AAPL", "SCHF", "OPTT", "RR",
+    // "PLTR", "SOFI", "VIVK", "CAN", "UBER", "CRWV", "XLF", "RGTI", "CHR", "AMZN",
+    // "SOUN", "JDST", "PATH", "BAC", "ARTV", "TE", "ACHR", "IWM", "GOOGL", "AMC",
+    // "QBTS", "NFLX", "QS", "DVLT", "UVIX", "SMR", "WBD", "SNAP", "URG", "IMNM",
+    // "AMD", "AG", "TSDD", "PL", "SGOV", "MNTS", "TLT", "CRCG", "JBLU"];
 
-        "ATPC", "SLV", "QQQ", "IQ", "TNYA", "JDST", "XLF", "BEAT", "FRMI", "TE", "KAVL", "IWM", "SQQQ", "ASBP", "ORCL", "SOFI", "VIVK", "BMNR", "PFE", "ZDGE", "DNN", "OPEN", "NFLX",
-        ];
+//     ["PRPH", "IVP", "FOLD", "SOXS", "VMAR", "LAZR", "NVDA", "AZI", "VIVK", "SOXL",
+// "PBM", "CHR", "TQQQ", "NKE", "PLUG", "AAPL", "TSLL", "RIVN", "AMZN", "TSLA",
+// "CGC", "WOK", "SPY", "CCL", "ORCL", "INTC", "DJT", "BMNU", "PLTR", "MU",
+// "INFY", "IBIT", "CMCSA", "NFLX", "QQQ", "CRWV", "AVGO", "ETHA", "GOOGL",
+// "NRXS", "PFE", "WBD", "ONDS", "GOVX", "IRBT", "MSFT", "AMD", "RZLV", "BMNR",
+// "LUNR", "INAB", "BAC", "VZ", "DVLT", "T", "TSLS", "MARA", "SQQQ", "APLD",
+// "ASST", "BBAI", "CSCO", "UVIX", "SLV", "BITO", "BITF", "AMST", "TZA", "SOFI",
+// "XOM", "BB", "MSTX", "OPEN", "GOOG", "XLF", "TLRY", "RKLB", "ALT", "MSOS",
+// "IREN", "SOPA", "RXRX", "IWM", "BTBT", "PDD", "OCG", "JDST", "CYPH", "BYND",
+// "RGTI", "KO", "AMCR", "UGRO", "PCG", "TSLQ", "XLE", "PLTD", "KVUE"];
+
+    ["SIDU", "HXHX", "SOXS", "DVLT", "NVDA", "VMAR", "CWAN", "TSLL", "LAZR", "TZA",
+    "TSLA", "PLUG", "BBAI", "SPY", "ONDS", "OPEN", "TQQQ", "QBTS", "SOXL", "AAL",
+    "TSLS", "RGTI", "CMCT", "VIVK", "INTC", "ASST", "SLV", "BITF", "IBIT", "FJET",
+    "RKLB", "DUST", "WBD", "QQQ", "BYND", "WOK", "BMNR", "AZI", "IWM", "CGC",
+    "IVP", "ABEV", "NFLX", "XLF", "BMNU", "PFE", "NKE", "RIVN", "BTG", "HYG",
+    "AAPL", "SNAP", "PLTR", "BITO", "SOFI", "SPYM", "VALE", "ACHR", "MARA",
+    "KAVL", "PLTD", "IREN", "ETHA", "JDST", "RZLV", "KVUE", "BAC", "DJT", "MSTX",
+    "FOLD", "AMZN", "GRAB", "NU", "AMC", "DNN", "F", "MU", "CMCSA", "BBD",
+    "CCL", "NVD", "EWZ", "AIRE", "T", "IONQ", "AVGO", "QUBT", "LUNR", "ORCL",
+    "CLSK", "BTBT", "GPUS", "TSDD", "GOOGL", "CRWG", "TE", "NOK", "TLT", "RDW",
+    "CDE"];
+
+  // const symbolsToScan = ['SPY', 'AAPL', 'QQQ'];
+  // const symbolsToScan = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'GOOGL', 'AMZN',//];
+  //       "SOXS", "OCG", "YCBD", "NVDA", "CGC", "BBAI", "TQQQ", "SOXL", "WOK", "TZA", "PLUG", "SPY", "ASST", "TSLL", "RIVN", "AVGO", "TSLA", "TSLS", "MSOS", "ONDS", "INTC", "TLRY",
+
+  //       "ATPC", "SLV", "QQQ", "IQ", "TNYA", "JDST", "XLF", "BEAT", "FRMI", "TE", "KAVL", "IWM", "SQQQ", "ASBP", "ORCL", "SOFI", "VIVK", "BMNR", "PFE", "ZDGE", "DNN", "OPEN", "NFLX",
+  //       ];
         // "HPE", "F", "AAL", "PLTD", "IBIT", "ETHA", "TLT", "KVUE", "WBD", "HYG", "QID", "WULF", "UGRO", "MARA", "PLTR", "RR", "BMNU", "BYND", "VALE", "SPDN", "BAC", "UVIX", "AAPL",
 
         // "LQD", "ACHR", "APLT", "SNAP", "CLSK", "NVD", "BITF", "IVP", "AMD", "FNGD", "NU", "GOGL", "AMZN", "IREN", "IRBT", "RZLT", "CRWV", "BTG", "BITO", "T", "NCI", "CVE", "RIG",
