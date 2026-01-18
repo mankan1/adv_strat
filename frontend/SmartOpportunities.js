@@ -971,7 +971,6 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
         setScanStatus(`Found ${allOpportunities.length} total opportunities`);
       }      
     } catch (error) {
-      generateSampleData();
       // even here, keep what we have
       setPartialResults(allOpportunities.length > 0);
       Alert.alert("Scan Error", `Scan stopped: ${error?.message || String(error)}`);
@@ -1107,6 +1106,443 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     }
   };
 
+
+  const getTabTitle = () => {
+    switch(activeTab) {
+      case 'high': return `High Probability (${opportunities.length})`;
+      case 'medium': return `Medium Probability (${mediumProbOpportunities.length})`;
+      case 'low': return `Low Probability (${lowProbOpportunities.length})`;
+      case 'near-miss': return `Near Miss (${nearMissOpportunities.length})`;
+      default: return `Opportunities (${opportunities.length})`;
+    }
+  };
+
+  const getTabDescription = () => {
+    switch(activeTab) {
+      case 'high': return '70%+ probability, best risk/reward';
+      case 'medium': return '60-69% probability, moderate risk';
+      case 'low': return '50-59% probability, higher risk/reward';
+      case 'near-miss': return 'Missed criteria by small margin';
+      default: return 'Select a category';
+    }
+  };
+
+  const renderTradeDetails = (opp) => {
+    if (!opp || !opp.setup) return null;
+    
+    const tradeType = opp.type;
+    const isCredit = tradeType.includes('credit') || tradeType === 'theta-decay' || tradeType === 'iron-condor';
+    const isDebit = tradeType.includes('debit');
+    const isStraddle = tradeType === 'volatility';
+    
+    let tradeInstructions = [];
+    let optionLegs = [];
+    let maxProfit = opp.maxProfit;
+    let maxLoss = opp.maxLoss;
+    let breakevenPoints = [];
+    let currentStockPrice = opp.currentPrice || 0;
+    
+    switch(opp.strategy) {
+      case 'Iron Condor':
+      case 'Iron Condor (Near Miss)':
+        const { shortCall, longCall, shortPut, longPut } = opp.setup;
+        const putDistance = ((currentStockPrice - shortPut) / currentStockPrice * 100).toFixed(1);
+        const callDistance = ((shortCall - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        
+        tradeInstructions = [
+          `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
+          '',
+          'SELL Put Spread:',
+          `  • SELL Put @ $${shortPut} strike (${putDistance}% OTM)`,
+          `  • BUY Put @ $${longPut} strike (lower strike)`,
+          '',
+          'SELL Call Spread:',
+          `  • SELL Call @ $${shortCall} strike (${callDistance}% OTM)`,
+          `  • BUY Call @ $${longCall} strike (higher strike)`,
+          '',
+          `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
+          `Net Credit: $${opp.cost} per contract`
+        ];
+        
+        optionLegs = [
+          { action: 'SELL', type: 'PUT', strike: shortPut, premium: 'Credit', distance: `${putDistance}% OTM` },
+          { action: 'BUY', type: 'PUT', strike: longPut, premium: 'Debit', distance: '' },
+          { action: 'SELL', type: 'CALL', strike: shortCall, premium: 'Credit', distance: `${callDistance}% OTM` },
+          { action: 'BUY', type: 'CALL', strike: longCall, premium: 'Debit', distance: '' }
+        ];
+        
+        const netCredit = parseFloat(opp.cost);
+        breakevenPoints = [
+          `Put side: $${shortPut} - $${netCredit.toFixed(2)} = $${(shortPut - netCredit).toFixed(2)} (${((shortPut - netCredit - currentStockPrice) / currentStockPrice * 100).toFixed(1)}% from current)`,
+          `Call side: $${shortCall} + $${netCredit.toFixed(2)} = $${(shortCall + netCredit).toFixed(2)} (${((shortCall + netCredit - currentStockPrice) / currentStockPrice * 100).toFixed(1)}% from current)`
+        ];
+        break;
+        
+      case 'Bull Call Spread':
+      case 'Bear Put Spread':
+        const isBull = opp.strategy.includes('Bull');
+        const longStrike = isBull ? opp.setup.longCall : opp.setup.longPut;
+        const shortStrike = isBull ? opp.setup.shortCall : opp.setup.shortPut;
+        const optionType = isBull ? 'CALL' : 'PUT';
+        
+        const longDistance = isBull 
+          ? ((longStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1)
+          : ((currentStockPrice - longStrike) / currentStockPrice * 100).toFixed(1);
+        const shortDistance = isBull
+          ? ((shortStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1)
+          : ((currentStockPrice - shortStrike) / currentStockPrice * 100).toFixed(1);
+        
+        tradeInstructions = [
+          `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
+          '',
+          `${isBull ? 'BULLISH' : 'BEARISH'} VERTICAL SPREAD:`,
+          `1. BUY ${optionType} @ $${longStrike} strike (${isBull ? longDistance + '% ITM' : longDistance + '% OTM'})`,
+          `2. SELL ${optionType} @ $${shortStrike} strike (${isBull ? shortDistance + '% OTM' : shortDistance + '% ITM'})`,
+          '',
+          `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
+          `Net Debit: $${opp.cost} per contract`
+        ];
+        
+        optionLegs = [
+          { action: 'BUY', type: optionType, strike: longStrike, premium: 'Debit', distance: `${longDistance}% ${isBull ? 'ITM' : 'OTM'}` },
+          { action: 'SELL', type: optionType, strike: shortStrike, premium: 'Credit', distance: `${shortDistance}% ${isBull ? 'OTM' : 'ITM'}` }
+        ];
+        
+        const debit = parseFloat(opp.cost);
+        if (isBull) {
+          const breakevenPrice = longStrike + debit;
+          const breakevenDistance = ((breakevenPrice - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+          breakevenPoints = [
+            `Breakeven: $${longStrike} + $${debit.toFixed(2)} = $${breakevenPrice.toFixed(2)} (${breakevenDistance}% from current)`,
+            `Profit Zone: Stock between $${breakevenPrice.toFixed(2)} and $${shortStrike}`
+          ];
+        } else {
+          const breakevenPrice = longStrike - debit;
+          const breakevenDistance = ((currentStockPrice - breakevenPrice) / currentStockPrice * 100).toFixed(1);
+          breakevenPoints = [
+            `Breakeven: $${longStrike} - $${debit.toFixed(2)} = $${breakevenPrice.toFixed(2)} (${breakevenDistance}% from current)`,
+            `Profit Zone: Stock between $${shortStrike} and $${breakevenPrice.toFixed(2)}`
+          ];
+        }
+        break;
+        
+      case 'Theta Call Sale':
+      case 'Theta Put Sale':
+      case 'Naked Put Sale':
+        const isCall = opp.strategy.includes('Call');
+        const strike = opp.setup.strike;
+        
+        const strikeDistance = isCall
+          ? ((strike - currentStockPrice) / currentStockPrice * 100).toFixed(1)
+          : ((currentStockPrice - strike) / currentStockPrice * 100).toFixed(1);
+        
+        tradeInstructions = [
+          `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
+          '',
+          'NAKED OPTION SALE:',
+          `SELL ${isCall ? 'CALL' : 'PUT'} @ $${strike} strike (${strikeDistance}% OTM)`,
+          '',
+          `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
+          `Credit Received: $${opp.cost} per contract`,
+          '',
+          '⚠️ WARNING: Unlimited risk! Use stop losses.'
+        ];
+        
+        optionLegs = [
+          { action: 'SELL', type: isCall ? 'CALL' : 'PUT', strike: strike, premium: 'Credit', distance: `${strikeDistance}% OTM` }
+        ];
+        
+        const credit = parseFloat(opp.cost);
+        if (isCall) {
+          const breakevenPrice = strike + credit;
+          const breakevenDistance = ((breakevenPrice - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+          breakevenPoints = [`Breakeven: Stock at $${breakevenPrice.toFixed(2)} (${breakevenDistance}% from current)`];
+          maxLoss = 'Unlimited (stock above breakeven)';
+        } else {
+          const breakevenPrice = strike - credit;
+          const breakevenDistance = ((currentStockPrice - breakevenPrice) / currentStockPrice * 100).toFixed(1);
+          breakevenPoints = [`Breakeven: Stock at $${breakevenPrice.toFixed(2)} (${breakevenDistance}% from current)`];
+          maxLoss = `$${strike} (if stock goes to $0)`;
+        }
+        break;
+        
+      case 'Long Straddle':
+        const { callStrike, putStrike } = opp.setup;
+        
+        // const callDistance = ((callStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        // const putDistance = ((currentStockPrice - putStrike) / currentStockPrice * 100).toFixed(1);
+        callDistance = ((callStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        putDistance = ((currentStockPrice - putStrike) / currentStockPrice * 100).toFixed(1);
+        
+        tradeInstructions = [
+          `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
+          '',
+          'LONG STRADDLE:',
+          `1. BUY CALL @ $${callStrike} strike (${Math.abs(callDistance)}% ${parseFloat(callDistance) > 0 ? 'OTM' : 'ITM'})`,
+          `2. BUY PUT @ $${putStrike} strike (${Math.abs(putDistance)}% ${parseFloat(putDistance) > 0 ? 'OTM' : 'ITM'})`,
+          '',
+          `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
+          `Total Debit: $${opp.cost} per contract`,
+          '',
+          '✅ Profit if stock moves significantly in EITHER direction'
+        ];
+        
+        optionLegs = [
+          { action: 'BUY', type: 'CALL', strike: callStrike, premium: 'Debit', distance: `${Math.abs(callDistance)}% ${parseFloat(callDistance) > 0 ? 'OTM' : 'ITM'}` },
+          { action: 'BUY', type: 'PUT', strike: putStrike, premium: 'Debit', distance: `${Math.abs(putDistance)}% ${parseFloat(putDistance) > 0 ? 'OTM' : 'ITM'}` }
+        ];
+        
+        const totalDebit = parseFloat(opp.cost);
+        const upperBreakeven = callStrike + totalDebit;
+        const lowerBreakeven = putStrike - totalDebit;
+        const upperDistance = ((upperBreakeven - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        const lowerDistance = ((currentStockPrice - lowerBreakeven) / currentStockPrice * 100).toFixed(1);
+        
+        breakevenPoints = [
+          `Upper Breakeven: $${callStrike} + $${totalDebit.toFixed(2)} = $${upperBreakeven.toFixed(2)} (${upperDistance}% from current)`,
+          `Lower Breakeven: $${putStrike} - $${totalDebit.toFixed(2)} = $${lowerBreakeven.toFixed(2)} (${lowerDistance}% from current)`
+        ];
+        maxProfit = 'Unlimited (in either direction)';
+        break;
+        
+      case 'Credit Spread':
+        const { shortCall: creditShortCall, longCall: creditLongCall } = opp.setup;
+        
+        const shortCallDistance = ((creditShortCall - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        const longCallDistance = ((creditLongCall - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        
+        tradeInstructions = [
+          `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
+          '',
+          'BEAR CALL SPREAD:',
+          `1. SELL CALL @ $${creditShortCall} strike (${shortCallDistance}% OTM)`,
+          `2. BUY CALL @ $${creditLongCall} strike (${longCallDistance}% OTM)`,
+          '',
+          `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
+          `Net Credit: $${opp.cost} per contract`
+        ];
+        
+        optionLegs = [
+          { action: 'SELL', type: 'CALL', strike: creditShortCall, premium: 'Credit', distance: `${shortCallDistance}% OTM` },
+          { action: 'BUY', type: 'CALL', strike: creditLongCall, premium: 'Debit', distance: `${longCallDistance}% OTM` }
+        ];
+        
+        const bearCredit = parseFloat(opp.cost);
+        const bearBreakeven = creditShortCall + bearCredit;
+        const bearDistance = ((bearBreakeven - currentStockPrice) / currentStockPrice * 100).toFixed(1);
+        breakevenPoints = [`Breakeven: Stock at $${bearBreakeven.toFixed(2)} (${bearDistance}% from current)`];
+        break;
+    }
+    
+    return (
+      <ScrollView style={styles.tradeDetailsContainer}>
+        <Text style={styles.tradeDetailsTitle}>📋 EXACT TRADE TO MAKE</Text>
+        
+        <View style={styles.currentPriceBanner}>
+          <Text style={styles.currentPriceLabel}>Current {opp.symbol} Price:</Text>
+          <Text style={styles.currentPriceValue}>${currentStockPrice.toFixed(2)}</Text>
+        </View>
+        
+        <View style={styles.tradeSummary}>
+          <View style={styles.tradeSummaryRow}>
+            <Text style={styles.tradeSummaryLabel}>Strategy:</Text>
+            <Text style={styles.tradeSummaryValue}>{opp.strategy}</Text>
+          </View>
+          <View style={styles.tradeSummaryRow}>
+            <Text style={styles.tradeSummaryLabel}>Direction:</Text>
+            <Text style={[
+              styles.tradeSummaryValue,
+              opp.greeks.delta > 0.3 ? styles.bullishText : 
+              opp.greeks.delta < -0.3 ? styles.bearishText : styles.neutralText
+            ]}>
+              {opp.greeks.delta > 0.3 ? 'BULLISH' : 
+               opp.greeks.delta < -0.3 ? 'BEARISH' : 'NEUTRAL'}
+            </Text>
+          </View>
+          <View style={styles.tradeSummaryRow}>
+            <Text style={styles.tradeSummaryLabel}>Expiration:</Text>
+            <Text style={styles.tradeSummaryValue}>{opp.expiration}</Text>
+          </View>
+          <View style={styles.tradeSummaryRow}>
+            <Text style={styles.tradeSummaryLabel}>DTE:</Text>
+            <Text style={styles.tradeSummaryValue}>{opp.daysToExpiry} days</Text>
+          </View>
+        </View>
+        
+        <View style={styles.sectionContainer}>
+          <Text style={styles.sectionTitle}>📊 Option Legs:</Text>
+          {optionLegs.map((leg, index) => (
+            <View key={index} style={styles.optionLeg}>
+              <View style={[
+                styles.legAction,
+                leg.action === 'BUY' ? styles.buyAction : styles.sellAction
+              ]}>
+                <Text style={styles.legActionText}>
+                  {leg.action}
+                </Text>
+              </View>
+              <View style={[
+                styles.legType,
+                leg.type === 'CALL' ? styles.callType : styles.putType
+              ]}>
+                <Text style={styles.legTypeText}>
+                  {leg.type}
+                </Text>
+              </View>
+              <View style={styles.legStrikeContainer}>
+                <Text style={styles.legStrike}>${leg.strike}</Text>
+                {leg.distance ? (
+                  <Text style={styles.legDistance}>{leg.distance}</Text>
+                ) : null}
+              </View>
+              <Text style={[
+                styles.legPremium,
+                leg.premium === 'Credit' ? styles.creditText : styles.debitText
+              ]}>
+                {leg.premium}
+              </Text>
+            </View>
+          ))}
+        </View>
+        
+        <View style={styles.sectionContainer}>
+          <Text style={styles.sectionTitle}>📝 Step-by-Step Instructions:</Text>
+          {tradeInstructions.map((line, index) => (
+            <Text key={index} style={styles.instructionLine}>
+              {line}
+            </Text>
+          ))}
+        </View>
+        
+        <View style={styles.sectionContainer}>
+          <Text style={styles.sectionTitle}>⚖️ Risk/Reward Analysis:</Text>
+          
+          <View style={styles.riskRewardGrid}>
+            <View style={styles.riskRewardItem}>
+              <Text style={styles.riskRewardLabel}>Max Profit</Text>
+              <Text style={[styles.riskRewardValue, styles.profitValue]}>
+                ${maxProfit}
+              </Text>
+              <Text style={styles.riskRewardDesc}>
+                {isCredit ? 'Keep entire credit if expires OTM' : 
+                 isDebit ? 'Difference between strikes minus cost' :
+                 'Unlimited if stock moves enough'}
+              </Text>
+            </View>
+            
+            <View style={styles.riskRewardItem}>
+              <Text style={styles.riskRewardLabel}>Max Loss</Text>
+              <Text style={[styles.riskRewardValue, styles.lossValue]}>
+                ${maxLoss}
+              </Text>
+              <Text style={styles.riskRewardDesc}>
+                {isCredit ? 'Difference between strikes minus credit' :
+                 isDebit ? 'Total debit paid' :
+                 opp.strategy.includes('Naked') ? 'Unlimited (use stops!)' :
+                 'Difference between strikes'}
+              </Text>
+            </View>
+          </View>
+          
+          <View style={styles.breakevenContainer}>
+            <Text style={styles.breakevenTitle}>🎯 Breakeven Points:</Text>
+            {breakevenPoints.map((point, index) => (
+              <Text key={index} style={styles.breakevenText}>
+                • {point}
+              </Text>
+            ))}
+          </View>
+        </View>
+        
+        <View style={styles.sectionContainer}>
+          <Text style={styles.sectionTitle}>📈 Greeks Analysis:</Text>
+          
+          <View style={styles.greekImpact}>
+            <Text style={styles.greekImpactLabel}>Δ Delta {opp.greeks.delta.toFixed(2)}:</Text>
+            <Text style={styles.greekImpactText}>
+              {Math.abs(opp.greeks.delta) > 0.4 ? 'Strong directional bias - trade expects price movement' :
+               Math.abs(opp.greeks.delta) > 0.2 ? 'Moderate directional bias' :
+               'Neutral - minimal price sensitivity'}
+            </Text>
+          </View>
+          
+          <View style={styles.greekImpact}>
+            <Text style={styles.greekImpactLabel}>Θ Theta {opp.greeks.theta.toFixed(2)}:</Text>
+            <Text style={styles.greekImpactText}>
+              {opp.greeks.theta > 0 ? `✅ Earns $${Math.abs(opp.greeks.theta).toFixed(2)} per day from time decay` :
+               `❌ Loses $${Math.abs(opp.greeks.theta).toFixed(2)} per day from time decay`}
+            </Text>
+          </View>
+          
+          <View style={styles.greekImpact}>
+            <Text style={styles.greekImpactLabel}>ν Vega {opp.greeks.vega.toFixed(2)}:</Text>
+            <Text style={styles.greekImpactText}>
+              {opp.greeks.vega > 0 ? `✅ Profits if IV rises $${Math.abs(opp.greeks.vega).toFixed(2)} per 1% IV increase` :
+               `❌ Loses if IV rises $${Math.abs(opp.greeks.vega).toFixed(2)} per 1% IV increase`}
+            </Text>
+          </View>
+        </View>
+        
+        <View style={styles.sectionContainer}>
+          <Text style={styles.sectionTitle}>🔄 Trade Management Rules:</Text>
+          
+          <View style={styles.managementRule}>
+            <Text style={styles.ruleIcon}>🎯</Text>
+            <View style={styles.ruleContent}>
+              <Text style={styles.ruleTitle}>Profit Target:</Text>
+              <Text style={styles.ruleText}>
+                {isCredit ? 'Take profit at 50-75% of max profit' :
+                 isDebit ? 'Take profit at 75-100% of max profit' :
+                 'Take profit when IV expands or price moves significantly'}
+              </Text>
+            </View>
+          </View>
+          
+          <View style={styles.managementRule}>
+            <Text style={styles.ruleIcon}>🛑</Text>
+            <View style={styles.ruleContent}>
+              <Text style={styles.ruleTitle}>Stop Loss:</Text>
+              <Text style={styles.ruleText}>
+                {isCredit ? 'Exit if loss reaches 150-200% of credit received' :
+                 isDebit ? 'Exit if loss reaches 50% of debit paid' :
+                 'Exit if loss reaches 50% of premium paid'}
+              </Text>
+            </View>
+          </View>
+          
+          <View style={styles.managementRule}>
+            <Text style={styles.ruleIcon}>📅</Text>
+            <View style={styles.ruleContent}>
+              <Text style={styles.ruleTitle}>Time Management:</Text>
+              <Text style={styles.ruleText}>
+                {opp.daysToExpiry <= 3 ? 'Close before expiration to avoid assignment risk' :
+                 opp.daysToExpiry <= 10 ? 'Monitor daily - gamma risk increases' :
+                 'Weekly monitoring sufficient'}
+              </Text>
+            </View>
+          </View>
+        </View>
+        
+        <View style={styles.sectionContainer}>
+          <Text style={styles.sectionTitle}>💻 How to Enter in Your Broker:</Text>
+          <Text style={styles.brokerText}>1. Go to options chain for {opp.symbol}</Text>
+          <Text style={styles.brokerText}>2. Select expiration: {opp.expiration}</Text>
+          <Text style={styles.brokerText}>3. Enter as a {optionLegs.length > 2 ? '4-leg' : '2-leg'} order</Text>
+          <Text style={styles.brokerText}>4. Use LIMIT order, not market</Text>
+          <Text style={styles.brokerText}>5. Set price: ${opp.cost} {isCredit ? 'credit' : 'debit'}</Text>
+          <Text style={styles.brokerText}>6. Review and submit order</Text>
+        </View>
+        
+        <View style={styles.disclaimerContainer}>
+          <Text style={styles.disclaimerText}>
+            ⚠️ This is not financial advice. Trade at your own risk. 
+            Always do your own research and consider paper trading first.
+          </Text>
+        </View>
+      </ScrollView>
+    );
+  };
+
   const getStrategyColor = (type) => {
     switch (type) {
       case "credit-spread":
@@ -1129,6 +1565,146 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     if (probability >= 60) return "#F59E0B";
     if (probability >= 50) return "#EF4444";
     return "#6B7280";
+  };
+
+
+  const renderOpportunityModal = () => {
+    if (!selectedOpp) return null;
+    
+    const strategyColor = getStrategyColor(selectedOpp.type);
+    
+    return (
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={!!selectedOpp}
+        onRequestClose={() => setSelectedOpp(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>
+                  {selectedOpp.symbol} - {selectedOpp.strategy}
+                </Text>
+                <Text style={styles.modalSubtitle}>
+                  {selectedOpp.probability}% Probability • Score: {selectedOpp.score}
+                </Text>
+              </View>
+              <TouchableOpacity 
+                style={styles.modalCloseButton}
+                onPress={() => setSelectedOpp(null)}
+              >
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            
+            <View style={styles.modalTabs}>
+              <TouchableOpacity 
+                style={[styles.modalTab, modalTab === 'details' && styles.activeModalTab]}
+                onPress={() => setModalTab('details')}
+              >
+                <Text style={[
+                  styles.modalTabText,
+                  modalTab === 'details' && styles.activeModalTabText
+                ]}>
+                  Details
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.modalTab, modalTab === 'trade' && styles.activeModalTab]}
+                onPress={() => setModalTab('trade')}
+              >
+                <Text style={[
+                  styles.modalTabText,
+                  modalTab === 'trade' && styles.activeModalTabText
+                ]}>
+                  Trade Setup
+                </Text>
+              </TouchableOpacity>
+            </View>
+            
+            <View style={styles.modalBody}>
+              {modalTab === 'details' ? (
+                <ScrollView>
+                  <View style={styles.modalSection}>
+                    <Text style={styles.modalSectionTitle}>Trade Details</Text>
+                    <View style={styles.modalGrid}>
+                      <View style={styles.modalItem}>
+                        <Text style={styles.modalLabel}>Current Price</Text>
+                        <Text style={styles.modalValue}>${selectedOpp.currentPrice?.toFixed(2) || 'N/A'}</Text>
+                      </View>
+                      <View style={styles.modalItem}>
+                        <Text style={styles.modalLabel}>Expiration</Text>
+                        <Text style={styles.modalValue}>{selectedOpp.expiration}</Text>
+                      </View>
+                      <View style={styles.modalItem}>
+                        <Text style={styles.modalLabel}>Days to Expiry</Text>
+                        <Text style={styles.modalValue}>{selectedOpp.daysToExpiry}</Text>
+                      </View>
+                      <View style={styles.modalItem}>
+                        <Text style={styles.modalLabel}>IV Percentile</Text>
+                        <Text style={styles.modalValue}>{selectedOpp.ivPercentile}%</Text>
+                      </View>
+                    </View>
+                  </View>
+                  
+                  <View style={styles.modalSection}>
+                    <Text style={styles.modalSectionTitle}>Risk Analysis</Text>
+                    <View style={styles.modalGrid}>
+                      <View style={styles.modalItem}>
+                        <Text style={styles.modalLabel}>Max Profit</Text>
+                        <Text style={[styles.modalValue, styles.profitText]}>
+                          ${selectedOpp.maxProfit}
+                        </Text>
+                      </View>
+                      <View style={styles.modalItem}>
+                        <Text style={styles.modalLabel}>Max Loss</Text>
+                        <Text style={[styles.modalValue, styles.lossText]}>
+                          ${selectedOpp.maxLoss}
+                        </Text>
+                      </View>
+                      <View style={styles.modalItem}>
+                        <Text style={styles.modalLabel}>Risk/Reward</Text>
+                        <Text style={styles.modalValue}>{selectedOpp.rewardRiskRatio}:1</Text>
+                      </View>
+                    </View>
+                  </View>
+                  
+                  {selectedOpp.reason && (
+                    <View style={styles.modalSection}>
+                      <Text style={styles.modalSectionTitle}>Why This Trade?</Text>
+                      <Text style={styles.reasonModalText}>{selectedOpp.reason}</Text>
+                    </View>
+                  )}
+                </ScrollView>
+              ) : (
+                renderTradeDetails(selectedOpp)
+              )}
+            </View>
+            
+            <View style={styles.modalFooter}>
+              <TouchableOpacity 
+                style={styles.modalButton}
+                onPress={() => {
+                  Alert.alert('Trade Executed', 'Trade has been placed in paper trading mode');
+                  setSelectedOpp(null);
+                }}
+              >
+                <Text style={styles.modalButtonText}>📈 Paper Trade This</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.secondaryButton]}
+                onPress={() => setSelectedOpp(null)}
+              >
+                <Text style={styles.secondaryButtonText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
   };
 
   const renderProbabilityTabs = () => {
@@ -1841,6 +2417,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
 
       {renderSelectedModal()}
       {renderUnusualModal()}
+      {renderOpportunityModal()}
       {renderScanningOverlay()}
       {renderSettingsModal()}
     </View>
