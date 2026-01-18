@@ -1,6 +1,6 @@
 // API Configuration
-export const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:5000';
-export const SOCKET_URL = process.env.SOCKET_URL || 'ws://localhost:5000';
+export const API_BASE_URL = process.env.API_BASE_URL || 'http://advstrat-production.up.railway.app:5000'; //https://advstrat-production.up.railway.app
+export const SOCKET_URL = process.env.SOCKET_URL || 'ws://advstrat-production.up.railway.app:5000';
 
 // Application Constants
 export const APP_NAME = 'Options Scanner';
