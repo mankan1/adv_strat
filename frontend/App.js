@@ -22,7 +22,7 @@ export default function App() {
   const [backendConnected, setBackendConnected] = useState(false);
   const [error, setError] = useState(null);
   const [apiEndpoints, setApiEndpoints] = useState([]);
-  const backendUrl = 'http://localhost:5000';
+  const backendUrl = 'https://advstrat-production.up.railway.app:5000';
 
   // Discover what endpoints are available
   const discoverEndpoints = async () => {
