@@ -12,7 +12,7 @@ import {
   Picker
 } from 'react-native';
 
-const AdvancedTrading = ({ backendUrl = 'https://advstrat-production.up.railway.app:5000' }) => {
+const AdvancedTrading = ({ backendUrl = 'https://advstrat-production.up.railway.app:8080' }) => {
   const [symbol, setSymbol] = useState('SPY');
   const [strategy, setStrategy] = useState('vertical-spread');
   const [expirations, setExpirations] = useState([]);
