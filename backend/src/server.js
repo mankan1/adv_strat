@@ -35,17 +35,44 @@ const logger = winston.createLogger({
 app.use(helmet());
 app.use(compression());
 
-app.use(cors({
-  // origin: 'http://localhost:8081',
-  origin: [
-    "http://localhost:8081",
-    "http://localhost:19006",
-    "http://localhost:3000",
-    "https://adv-strat.vercel.app",
-    /https:\/\/.*\.vercel\.app$/,
-  ],
-  credentials: true
-}));
+const allowedOrigins = new Set([
+  "http://localhost:8081",
+  "http://localhost:19006",
+  "http://localhost:3000",
+  "https://adv-strat.vercel.app",
+]);
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      // allow curl/server-to-server (no Origin header)
+      if (!origin) return cb(null, true);
+
+      // allow exact matches
+      if (allowedOrigins.has(origin)) return cb(null, true);
+
+      // allow Vercel preview deploys
+      if (/^https:\/\/.*\.vercel\.app$/.test(origin)) return cb(null, true);
+
+      return cb(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    credentials: true,
+  })
+);
+
+// preflight
+app.options("*", cors());
+// app.use(cors({
+//   // origin: 'http://localhost:8081',
+//   origin: [
+//     "http://localhost:8081",
+//     "http://localhost:19006",
+//     "http://localhost:3000",
+//     "https://adv-strat.vercel.app",
+//     /https:\/\/.*\.vercel\.app$/,
+//   ],
+//   credentials: true
+// }));
 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'http://localhost:8081');
