@@ -22,7 +22,7 @@ export default function App() {
   const [backendConnected, setBackendConnected] = useState(false);
   const [error, setError] = useState(null);
   const [apiEndpoints, setApiEndpoints] = useState([]);
-  const backendUrl = 'https://advstrat-production.up.railway.app:8080';
+  const backendUrl = 'https://advstrat-production.up.railway.app';
 
   // Discover what endpoints are available
   const discoverEndpoints = async () => {
@@ -448,7 +448,7 @@ export default function App() {
       {/* Instructions */}
       <View style={styles.instructions}>
         <Text style={styles.instructionsTitle}>To Get Real Data:</Text>
-        <Text style={styles.instructionsText}>1. Ensure backend is running on port 8080</Text>
+        <Text style={styles.instructionsText}>1. Ensure backend is running on port (8080)</Text>
         <Text style={styles.instructionsText}>2. Implement /market/quote/:symbol endpoint</Text>
         <Text style={styles.instructionsText}>3. Implement /scan/top-stocks endpoint</Text>
         <Text style={styles.instructionsText}>4. Add your Tradier API key to backend</Text>

@@ -46,7 +46,7 @@ const DEV_TRADIER_TOKEN = "DZi4KKhQVv05kjgqXtvJRyiFbEhn";
  *   - GET https://api.tradier.com/v1/markets/options/chains?symbol=XYZ&expiration=YYYY-MM-DD&greeks=true
  */
 
-const DEFAULT_BACKEND = "https://advstrat-production.up.railway.app:8080";
+const DEFAULT_BACKEND = "https://advstrat-production.up.railway.app";
 const DEFAULT_ALPACA_DATA_BASE = "https://data.alpaca.markets";
 const DEFAULT_TRADIER_BASE = "https://api.tradier.com";
 
