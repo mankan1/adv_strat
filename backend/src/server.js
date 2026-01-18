@@ -36,7 +36,13 @@ app.use(helmet());
 app.use(compression());
 
 app.use(cors({
-  origin: 'http://localhost:8081',
+  // origin: 'http://localhost:8081',
+  origin: [
+    "http://localhost:8081",
+    "http://localhost:19006",
+    "http://localhost:3000",
+    /https:\/\/.*\.vercel\.app$/,
+  ],
   credentials: true
 }));
 
