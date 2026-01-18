@@ -13,7 +13,7 @@ import {
 // Simple API test
 const testBackend = async () => {
   try {
-    const response = await fetch('http://localhost:5000/health');
+    const response = await fetch('https://advstrat-production.up.railway.app:5000/health');
     const data = await response.json();
     return { success: true, data };
   } catch (error) {
@@ -160,7 +160,7 @@ export default function App() {
           Options Scanner v1.0.0
         </Text>
         <Text style={styles.footerText}>
-          Backend: http://localhost:5000
+          Backend: https://advstrat-production.up.railway.app:5000
         </Text>
       </View>
     </SafeAreaView>

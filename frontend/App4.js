@@ -18,7 +18,7 @@ export default function App() {
   const [backendConnected, setBackendConnected] = useState(false);
   const [availableEndpoints, setAvailableEndpoints] = useState([]);
   const [error, setError] = useState(null);
-  const backendUrl = 'http://localhost:5000';
+  const backendUrl = 'https://advstrat-production.up.railway.app:5000';
 
   // Test if an endpoint exists
   const testEndpoint = async (endpoint, method = 'GET', body = null) => {

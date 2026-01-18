@@ -16,7 +16,7 @@ export default function App() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [backendConnected, setBackendConnected] = useState(false);
   const [error, setError] = useState(null);
-  const backendUrl = 'http://localhost:5000';
+  const backendUrl = 'https://advstrat-production.up.railway.app:5000';
 
   // Fetch all data from backend
   const fetchData = async () => {

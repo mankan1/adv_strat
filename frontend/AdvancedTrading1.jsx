@@ -127,7 +127,7 @@ const AdvancedTrading = () => {
   // API Functions
   const fetchQuote = async () => {
     try {
-      const response = await fetch(`http://localhost:5000/market/quote/${symbol}`);
+      const response = await fetch(`https://advstrat-production.up.railway.app:5000/market/quote/${symbol}`);
       const data = await response.json();
       if (data.success) {
         setQuote(data);
@@ -139,7 +139,7 @@ const AdvancedTrading = () => {
 
   const fetchExpirations = async () => {
     try {
-      const response = await fetch(`http://localhost:5000/options/expirations/${symbol}`);
+      const response = await fetch(`https://advstrat-production.up.railway.app:5000/options/expirations/${symbol}`);
       const data = await response.json();
       if (data.success) {
         setExpirations(data.expirations || []);
@@ -151,7 +151,7 @@ const AdvancedTrading = () => {
 
   const fetchOptionsChain = async (expiration) => {
     try {
-      const response = await fetch(`http://localhost:5000/options/chain/${symbol}?expiration=${expiration}`);
+      const response = await fetch(`https://advstrat-production.up.railway.app:5000/options/chain/${symbol}?expiration=${expiration}`);
       const data = await response.json();
       if (data.success) {
         setOptionsChain(data.options || []);

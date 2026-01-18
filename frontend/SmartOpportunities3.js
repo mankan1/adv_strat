@@ -14,7 +14,7 @@ import {
 
 const { width } = Dimensions.get('window');
 
-const SmartOpportunities = ({ backendUrl = 'http://localhost:5000' }) => {
+const SmartOpportunities = ({ backendUrl = 'https://advstrat-production.up.railway.app:5000' }) => {
   const [opportunities, setOpportunities] = useState([]);
   const [mediumProbOpportunities, setMediumProbOpportunities] = useState([]);
   const [lowProbOpportunities, setLowProbOpportunities] = useState([]);

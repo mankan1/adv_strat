@@ -15,7 +15,7 @@ import {
 const { width } = Dimensions.get('window');
 
 const SmartOpportunities = ({
-  backendUrl = 'http://localhost:5000',
+  backendUrl = 'https://advstrat-production.up.railway.app:5000',
 
   // 🔐 Alpaca creds (frontend = NOT secure; do this only for dev/testing)
   alpacaKeyId = 'AKNND2CVUEIRFCDNVMXL2NYVWD',

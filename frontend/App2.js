@@ -27,7 +27,7 @@ export default function App() {
   const [searchLoading, setSearchLoading] = useState(false);
 
   // Backend base URL
-  const BACKEND_URL = 'http://localhost:5000';
+  const BACKEND_URL = 'https://advstrat-production.up.railway.app:5000';
 
   // Fetch all data from backend
   const fetchData = async () => {
@@ -307,7 +307,7 @@ export default function App() {
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#667eea" />
         <Text style={styles.loadingText}>Connecting to backend...</Text>
-        <Text style={styles.loadingSubtext}>http://localhost:5000</Text>
+        <Text style={styles.loadingSubtext}>https://advstrat-production.up.railway.app:5000</Text>
       </View>
     );
   }
