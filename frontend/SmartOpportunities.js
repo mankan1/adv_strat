@@ -44,6 +44,14 @@ const DEV_TRADIER_TOKEN = "DZi4KKhQVv05kjgqXtvJRyiFbEhn";
  * - Unusual options activity computed from Tradier option chains:
  *   - GET https://api.tradier.com/v1/markets/options/expirations?symbol=XYZ
  *   - GET https://api.tradier.com/v1/markets/options/chains?symbol=XYZ&expiration=YYYY-MM-DD&greeks=true
+ *
+ * ✅ NEW (Paper Portfolio):
+ * - Adds paper trades from:
+ *   - Smart Opportunities (opps modal)
+ *   - Unusual Options (unusual modal)
+ * - P&L updates ONLY when you press "Get Current Prices" in the Portfolio tab
+ * - Uses Tradier quotes (batched) for option symbols
+ * - If an opp leg is missing an option symbol, resolves it via Tradier options chain ON DEMAND (button press).
  */
 
 const DEFAULT_BACKEND = "https://advstrat-production.up.railway.app";
@@ -81,6 +89,47 @@ async function withConcurrency(items, concurrency, worker) {
   });
 }
 
+// ---------------------------
+// ✅ NEW: small numeric helpers
+// ---------------------------
+const toNum = (v) => {
+  const n = typeof v === "string" ? Number(v) : v;
+  return Number.isFinite(n) ? n : null;
+};
+const midFrom = (bid, ask, last) => {
+  const b = toNum(bid);
+  const a = toNum(ask);
+  if (b != null && a != null && b > 0 && a > 0) return (b + a) / 2;
+  const l = toNum(last);
+  return l != null ? l : null;
+};
+const fmt2 = (v) => (v == null ? "—" : Number(v).toFixed(2));
+const yyyyMmDdToDte = (exp) => {
+  const t = new Date(exp).getTime();
+  if (!Number.isFinite(t)) return null;
+  return Math.ceil((t - Date.now()) / (1000 * 60 * 60 * 24));
+};
+
+// ---------------------------
+// ✅ NEW: normalize Tradier quote response
+// ---------------------------
+const normalizeTradierQuotes = (json) => {
+  const q = json?.quotes?.quote;
+  const arr = Array.isArray(q) ? q : q ? [q] : [];
+  return arr
+    .map((x) => {
+      const symbol = x?.symbol;
+      return {
+        symbol,
+        bid: toNum(x?.bid),
+        ask: toNum(x?.ask),
+        last: toNum(x?.last),
+        // Tradier sometimes includes "open_interest", etc. but we only need price
+      };
+    })
+    .filter((x) => x.symbol);
+};
+
 const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
   // ---------- Credentials / Settings ----------
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -90,15 +139,11 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
   const [partialResults, setPartialResults] = useState(false);
   const [scanCompletedSymbols, setScanCompletedSymbols] = useState(0);
 
-  // const [alpacaKeyId, setAlpacaKeyId] = useState("");
-  // const [alpacaSecret, setAlpacaSecret] = useState("");
   const [alpacaBase, setAlpacaBase] = useState(DEFAULT_ALPACA_DATA_BASE);
   const [alpacaKeyId, setAlpacaKeyId] = useState(DEV_HARDCODE_KEYS ? DEV_ALPACA_KEY_ID : "");
   const [alpacaSecret, setAlpacaSecret] = useState(DEV_HARDCODE_KEYS ? DEV_ALPACA_SECRET : "");
   const [tradierToken, setTradierToken] = useState(DEV_HARDCODE_KEYS ? DEV_TRADIER_TOKEN : "");
 
-  
-  // const [tradierToken, setTradierToken] = useState("");
   const [tradierBase, setTradierBase] = useState(DEFAULT_TRADIER_BASE);
 
   // Universe knobs
@@ -120,16 +165,6 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
   // ---------- Universe state ----------
   const [universeLoading, setUniverseLoading] = useState(false);
   const [universeError, setUniverseError] = useState("");
-  // const [universeMeta, setUniverseMeta] = useState({
-  //   mostActiveVolume: [],
-  //   topTraded: [],
-  //   gainers: [],
-  //   losers: [],
-  //   gapUps: [],
-  //   gapDowns: [],
-  //   trending: [],
-  //   merged: [],
-  // });
 
   const [universeMeta, setUniverseMeta] = useState({
     mostActiveVolume: [],
@@ -162,7 +197,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
   const [unusualLoading, setUnusualLoading] = useState(false);
   const [unusualError, setUnusualError] = useState("");
   const [unusualList, setUnusualList] = useState([]); // flattened unusual contracts
-  const [activeMainTab, setActiveMainTab] = useState("opps"); // "opps" | "unusual" | "universe"
+  const [activeMainTab, setActiveMainTab] = useState("opps"); // "opps" | "unusual" | "universe" | "portfolio"
 
   const [filters] = useState({
     minProbability: 70,
@@ -171,6 +206,14 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     expiryDays: [0, 30],
     strategyTypes: ["debit-spread", "credit-spread", "iron-condor", "calendar"],
   });
+
+  // ---------------------------
+  // ✅ NEW: Paper Portfolio state
+  // ---------------------------
+  const [paperPortfolio, setPaperPortfolio] = useState([]); // trades
+  const [portfolioLoadingPrices, setPortfolioLoadingPrices] = useState(false);
+  const [portfolioError, setPortfolioError] = useState("");
+  const [portfolioLastUpdated, setPortfolioLastUpdated] = useState(null);
 
   // ---------------------------
   // Persist settings (optional)
@@ -195,6 +238,30 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
       } catch {}
     })();
   }, []);
+
+  // ---------------------------
+  // ✅ NEW: Persist portfolio (optional)
+  // ---------------------------
+  useEffect(() => {
+    if (!AsyncStorage) return;
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem("paperPortfolioV1");
+        if (!raw) return;
+        const s = JSON.parse(raw);
+        if (Array.isArray(s)) setPaperPortfolio(s);
+      } catch {}
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!AsyncStorage) return;
+    // light debounce so we don't write on every keystroke too aggressively
+    const t = setTimeout(() => {
+      AsyncStorage.setItem("paperPortfolioV1", JSON.stringify(paperPortfolio)).catch(() => {});
+    }, 250);
+    return () => clearTimeout(t);
+  }, [paperPortfolio]);
 
   const cancelScanRef = useRef(false);
 
@@ -285,6 +352,29 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
   };
 
   // ---------------------------
+  // ✅ NEW: Batch quote fetcher (used only on Portfolio button press)
+  // ---------------------------
+  const tradierGetQuotesBatched = async (symbols, batchSize = 100) => {
+    const syms = uniq(symbols);
+    if (!syms.length) return {};
+    const out = {};
+    for (let i = 0; i < syms.length; i += batchSize) {
+      const batch = syms.slice(i, i + batchSize);
+      // Get Quotes: /v1/markets/quotes?symbols=SYM1,SYM2
+      const json = await tradierFetchJson("/v1/markets/quotes", {
+        symbols: batch.join(","),
+      });
+      const quotes = normalizeTradierQuotes(json);
+      quotes.forEach((q) => {
+        out[q.symbol] = q;
+      });
+      // tiny pacing
+      await sleep(80);
+    }
+    return out;
+  };
+
+  // ---------------------------
   // Universe builder
   // ---------------------------
   const loadUniverseFromAlpaca = async () => {
@@ -294,7 +384,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     try {
       const top = clampTop(universeTop);
 
-      // 1) Most active by volume (Alpaca requires by=volume or trades, top<=100)
+      // 1) Most active by volume
       const mostActiveVolume = includeSources.mostActiveVolume
         ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", {
             by: "volume",
@@ -302,7 +392,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           })
         : null;
 
-      // 2) Most active by trades (aka “top traded”)
+      // 2) Most active by trades
       const topTraded = includeSources.topTraded
         ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", {
             by: "trades",
@@ -311,13 +401,10 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
         : null;
 
       // 3) Movers (gainers/losers)
-      // const movers = includeSources.moversGainers || includeSources.moversLosers
-      //   ? await alpacaFetchJson("/v1beta1/screener/stocks/movers", { top })
-      //   : null;
       const movers =
-      includeSources.moversGainers || includeSources.moversLosers
-        ? await alpacaFetchJson("/v1beta1/screener/stocks/movers") // ✅ NO top param
-        : null;
+        includeSources.moversGainers || includeSources.moversLosers
+          ? await alpacaFetchJson("/v1beta1/screener/stocks/movers") // ✅ NO top param
+          : null;
 
       const mostActiveVolumeSyms = (mostActiveVolume?.most_actives || mostActiveVolume?.mostActives || [])
         .map((x) => x.symbol)
@@ -339,8 +426,6 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
       ]);
 
       // 4) Snapshots for gap + trending calculations
-      // Alpaca supports snapshots per symbol. For a larger list, chunk requests.
-      // Endpoint: /v2/stocks/snapshots?symbols=... :contentReference[oaicite:3]{index=3}
       const chunkSize = 200; // safe-ish
       const snapshotMap = {};
       for (let i = 0; i < baseUnion.length; i += chunkSize) {
@@ -349,7 +434,6 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           symbols: chunk.join(","),
         });
 
-        // Snapshots response: { [symbol]: { dailyBar, prevDailyBar, latestTrade, ... } }
         Object.assign(snapshotMap, snap || {});
         await sleep(120); // small spacing
       }
@@ -386,8 +470,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
         .slice(0, top)
         .map((x) => x.symbol);
 
-      // Trending heuristic: blend abs(dayChangePct) + log(volume)
-      // (You can replace this with your preferred “trending” definition.)
+      // Trending heuristic
       const trending = gapStats
         .map((x) => {
           const absMove = Math.abs(x.dayChangePct ?? 0);
@@ -408,19 +491,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
         ...(includeSources.gapUps ? gapUps : []),
         ...(includeSources.gapDowns ? gapDowns : []),
         ...(includeSources.trending ? trending : []),
-      // ]).slice(0, Math.max(1, maxSymbolsToScan));
       ]).slice(0, top); // ✅ show up to 100 in Universe
-
-      // setUniverseMeta({
-      //   mostActiveVolume: mostActiveVolumeSyms,
-      //   topTraded: topTradedSyms,
-      //   gainers: gainersSyms,
-      //   losers: losersSyms,
-      //   gapUps,
-      //   gapDowns,
-      //   trending,
-      //   merged,
-      // });
 
       // Build rows with price + change + volume from snapshots
       const mergedRows = merged.map((sym) => {
@@ -458,19 +529,21 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
         trending,
         merged,
         mergedRows, // ✅
-      });      
+      });
     } catch (e) {
       setUniverseError(String(e?.message || e));
     } finally {
       setUniverseLoading(false);
     }
   };
+
   const openYahoo = (symbol) => {
     const url = `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}`;
     Linking.openURL(url).catch(() => {
       Alert.alert("Link error", "Could not open Yahoo Finance.");
     });
   };
+
   const isRateLimitError = (errOrText) => {
     const msg = String(errOrText || "").toLowerCase();
     return (
@@ -480,6 +553,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
       msg.includes("limit exceeded")
     );
   };
+
   const safeJson = async (res) => {
     const text = await res.text().catch(() => "");
     try {
@@ -592,6 +666,23 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     };
   };
 
+  // ---------------------------
+  // ✅ NEW: embed option symbols + bid/ask into setup when available
+  // (does NOT remove anything; only adds extra fields)
+  // ---------------------------
+  const enrichLeg = (opt) => {
+    if (!opt) return {};
+    return {
+      symbol: opt.symbol || opt.option_symbol || opt.oc_symbol || null,
+      bid: toNum(opt.bid),
+      ask: toNum(opt.ask),
+      last: toNum(opt.last),
+      strike: toNum(opt.strike),
+      optionType: opt.option_type || opt.optionType || opt.type || null,
+      expiration: opt.expiration || opt.expiration_date || null,
+    };
+  };
+
   const generateOpportunitiesByProbability = (
     symbol,
     expiration,
@@ -633,6 +724,12 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
               longCall: longCall.strike,
               shortPut: shortPut.strike,
               longPut: longPut.strike,
+
+              // ✅ NEW (optional) for paper portfolio
+              shortCall_leg: enrichLeg(shortCall),
+              longCall_leg: enrichLeg(longCall),
+              shortPut_leg: enrichLeg(shortPut),
+              longPut_leg: enrichLeg(longPut),
             },
             { delta: 0.03, theta: 0.22, vega: -0.1 },
             "High IV environment with wide strike placement",
@@ -663,7 +760,14 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
             maxProfit,
             probability,
             avgIV,
-            { longCall: longCall.strike, shortCall: shortCall.strike },
+            {
+              longCall: longCall.strike,
+              shortCall: shortCall.strike,
+
+              // ✅ NEW (optional) for paper portfolio
+              longCall_leg: enrichLeg(longCall),
+              shortCall_leg: enrichLeg(shortCall),
+            },
             { delta: 0.35, theta: -0.12, vega: 0.08 },
             "Moderate IV with directional bias",
             currentPrice
@@ -691,7 +795,14 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
             maxProfit,
             probability,
             avgIV,
-            { longPut: longPut.strike, shortPut: shortPut.strike },
+            {
+              longPut: longPut.strike,
+              shortPut: shortPut.strike,
+
+              // ✅ NEW (optional) for paper portfolio
+              longPut_leg: enrichLeg(longPut),
+              shortPut_leg: enrichLeg(shortPut),
+            },
             { delta: -0.35, theta: -0.11, vega: 0.07 },
             "Downside protection with moderate probability",
             currentPrice
@@ -729,6 +840,12 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
               longCall: longCall.strike,
               shortPut: shortPut.strike,
               longPut: longPut.strike,
+
+              // ✅ NEW (optional) for paper portfolio
+              shortCall_leg: enrichLeg(shortCall),
+              longCall_leg: enrichLeg(longCall),
+              shortPut_leg: enrichLeg(shortPut),
+              longPut_leg: enrichLeg(longPut),
             },
             { delta: 0.05, theta: 0.2, vega: -0.12 },
             "Narrow strikes, probability just below threshold",
@@ -783,104 +900,27 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
   // ---------------------------
   // Scan opportunities using Alpaca-derived universe
   // ---------------------------
-  // const symbolsToScan = useMemo(() => universeMeta.merged || [], [universeMeta.merged]);
   const symbolsToScan = useMemo(
     () => (universeMeta.merged || []).slice(0, Math.max(1, maxSymbolsToScan)),
     [universeMeta.merged, maxSymbolsToScan]
   );
-
-  // const scanOpportunities = async () => {
-  //   if (!symbolsToScan.length) {
-  //     Alert.alert("No symbols", "Load Universe from Alpaca first (Universe tab).");
-  //     return;
-  //   }
-
-  //   setLoading(true);
-  //   setScanning(true);
-  //   cancelScanRef.current = false;
-
-  //   setScanProgress(0);
-  //   setScanStatus("Initializing scan...");
-
-  //   setScanStoppedReason("");
-  //   setPartialResults(false);
-  //   setScanCompletedSymbols(0);
-
-  //   const allOpportunities = [];
-  //   let completed = 0;
-
-  //   try {
-
-  //     for (let i = 0; i < symbolsToScan.length; i++) {
-        
-  //       if (cancelScanRef.current) {
-  //         setScanStoppedReason("cancelled");
-  //         setPartialResults(allOpportunities.length > 0);
-  //         break;
-  //       }
-
-  //       const symbol = symbolsToScan[i];
-  //       setScanStatus(`Analyzing ${symbol} (${i + 1}/${symbolsToScan.length})...`);
-
-  //       try {
-  //         // Quotes
-  //         const quoteResponse = await fetch(`${backendUrl}/market/quote/${symbol}`);
-  //         if (!quoteResponse.ok) continue;
-  //         const quoteData = await quoteResponse.json();
-  //         if (!quoteData.success || !quoteData.last) continue;
-
-  //         // Options chain
-  //         const optionsResponse = await fetch(`${backendUrl}/options/chain/${symbol}`);
-  //         if (!optionsResponse.ok) continue;
-  //         const optionsData = await optionsResponse.json();
-  //         if (!optionsData.success || !optionsData.options) continue;
-
-  //         const symbolOpps = await analyzeSymbol(symbol, quoteData, optionsData.options);
-  //         allOpportunities.push(...symbolOpps);
-  //       } catch (err) {
-  //         // keep moving
-  //       }
-
-  //       setScanProgress(((i + 1) / symbolsToScan.length) * 100);
-  //       await sleep(150); // tiny pacing
-  //     }
-
-  //     const { highProb, mediumProb, lowProb, nearMiss } = categorizeOpportunities(allOpportunities);
-  //     const sortByScore = (a, b) => b.score - a.score;
-
-  //     setOpportunities(highProb.sort(sortByScore));
-  //     setMediumProbOpportunities(mediumProb.sort(sortByScore));
-  //     setLowProbOpportunities(lowProb.sort(sortByScore));
-  //     setNearMissOpportunities(nearMiss.sort(sortByScore));
-
-  //     setScanStatus(`Found ${allOpportunities.length} total opportunities`);
-  //   } catch (error) {
-  //     Alert.alert("Scan Error", `Failed to scan opportunities: ${error.message}`);
-  //   } finally {
-  //     setLoading(false);
-  //     setTimeout(() => {
-  //       setScanning(false);
-  //       setScanProgress(100);
-  //     }, 800);
-  //   }
-  // };
 
   const scanOpportunities = async () => {
     if (!symbolsToScan.length) {
       Alert.alert("No symbols", "Load Universe from Alpaca first (Universe tab).");
       return;
     }
-  
+
     setLoading(true);
     setScanning(true);
     cancelScanRef.current = false;
-  
+
     setScanProgress(0);
     setScanStatus("Initializing scan...");
     setScanStoppedReason("");
     setPartialResults(false);
     setScanCompletedSymbols(0);
-  
+
     // IMPORTANT: don’t wipe existing results until you have new ones
     const allOpportunities = [];
     let completed = 0;
@@ -893,32 +933,31 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           setPartialResults(allOpportunities.length > 0);
           break;
         }
-  
+
         const symbol = symbolsToScan[i];
         setScanStatus(`Analyzing ${symbol} (${i + 1}/${symbolsToScan.length})...`);
-  
+
         try {
           // Quotes
           const quoteRes = await fetch(`${backendUrl}/market/quote/${symbol}`);
           const quoteParsed = await safeJson(quoteRes);
-  
+
           if (!quoteParsed.ok) {
             if (quoteParsed.status === 429 || isRateLimitError(quoteParsed.text)) {
               setScanStoppedReason("rate-limited");
               setPartialResults(allOpportunities.length > 0);
               break;
             }
-            // skip this symbol
             continue;
           }
-  
+
           const quoteData = quoteParsed.json;
           if (!quoteData?.success || !quoteData?.last) continue;
-  
+
           // Options chain
           const optRes = await fetch(`${backendUrl}/options/chain/${symbol}`);
           const optParsed = await safeJson(optRes);
-  
+
           if (!optParsed.ok) {
             if (optParsed.status === 429 || isRateLimitError(optParsed.text)) {
               setScanStoppedReason("rate-limited");
@@ -927,51 +966,43 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
             }
             continue;
           }
-  
+
           const optionsData = optParsed.json;
           if (!optionsData?.success || !optionsData?.options) continue;
-  
+
           const symbolOpps = await analyzeSymbol(symbol, quoteData, optionsData.options);
           if (symbolOpps?.length) allOpportunities.push(...symbolOpps);
-  
+
           completed++;
           setScanCompletedSymbols(completed);
         } catch (err) {
-          // If backend throws a rate-limit error message, treat it the same
           if (isRateLimitError(err?.message || err)) {
             stoppedReasonLocal = "rate-limited";
             setScanStoppedReason("rate-limited");
             setPartialResults(allOpportunities.length > 0);
             break;
           }
-          // else ignore this symbol and keep going
         }
-  
+
         setScanProgress(((i + 1) / symbolsToScan.length) * 100);
         await sleep(150);
       }
-  
+
       // ✅ categorize whatever we have (even partial)
       const { highProb, mediumProb, lowProb, nearMiss } = categorizeOpportunities(allOpportunities);
       const sortByScore = (a, b) => b.score - a.score;
-  
+
       setOpportunities(highProb.sort(sortByScore));
       setMediumProbOpportunities(mediumProb.sort(sortByScore));
       setLowProbOpportunities(lowProb.sort(sortByScore));
       setNearMissOpportunities(nearMiss.sort(sortByScore));
-  
-      // if (scanStoppedReason === "rate-limited") {
-      //   setScanStatus(`Rate-limited — showing partial results (${completed}/${symbolsToScan.length} symbols).`);
-      // } else {
-      //   setScanStatus(`Found ${allOpportunities.length} total opportunities`);
-      // }
+
       if (stoppedReasonLocal === "rate-limited") {
         setScanStatus(`Rate-limited — showing partial results (${completed}/${symbolsToScan.length} symbols).`);
       } else {
         setScanStatus(`Found ${allOpportunities.length} total opportunities`);
-      }      
+      }
     } catch (error) {
-      // even here, keep what we have
       setPartialResults(allOpportunities.length > 0);
       Alert.alert("Scan Error", `Scan stopped: ${error?.message || String(error)}`);
     } finally {
@@ -990,10 +1021,6 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     const options = chain?.options?.option;
     const list = Array.isArray(options) ? options : options ? [options] : [];
 
-    // Heuristic:
-    // - volume / open_interest high
-    // - volume above a floor
-    // - optionally prioritize near-the-money
     const scored = list
       .map((o) => {
         const vol = Number(o.volume || 0);
@@ -1001,7 +1028,6 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
         const iv = Number(o.iv || 0);
         const delta = o.greeks?.delta ?? o.delta ?? null;
 
-        // const voi = (vol + 1) / (oi + 1);
         const voiRaw = (vol + 1) / (oi + 1);
         const voi = Math.min(20, voiRaw); // cap it
 
@@ -1089,6 +1115,372 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
   };
 
   // ---------------------------
+  // ✅ NEW: Paper Portfolio mechanics
+  // ---------------------------
+  const removePaperTrade = (tradeId) => {
+    setPaperPortfolio((prev) => prev.filter((t) => t.id !== tradeId));
+  };
+
+  const updatePaperTradeNotes = (tradeId, patch) => {
+    setPaperPortfolio((prev) =>
+      prev.map((t) => (t.id === tradeId ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t))
+    );
+  };
+
+  // Build legs from Smart Opportunity (uses setup + optional *_leg symbols we added)
+  const buildLegsFromOpportunity = (opp) => {
+    const exp = opp.expiration;
+
+    // Helper to push one leg
+    const pushLeg = (arr, action, optionType, strike, symMaybe, bidMaybe, askMaybe, lastMaybe) => {
+      const leg = {
+        action, // BUY | SELL
+        optionType, // call | put
+        strike: toNum(strike),
+        expiration: exp,
+        symbol: symMaybe || null,
+        entryBid: toNum(bidMaybe),
+        entryAsk: toNum(askMaybe),
+        entryLast: toNum(lastMaybe),
+      };
+      arr.push(leg);
+    };
+
+    const legs = [];
+
+    // Iron Condor (SELL put spread + SELL call spread)
+    if (opp.type === "iron-condor" && opp.setup?.shortCall != null) {
+      const sc = opp.setup.shortCall_leg || {};
+      const lc = opp.setup.longCall_leg || {};
+      const sp = opp.setup.shortPut_leg || {};
+      const lp = opp.setup.longPut_leg || {};
+
+      pushLeg(legs, "SELL", "call", opp.setup.shortCall, sc.symbol, sc.bid, sc.ask, sc.last);
+      pushLeg(legs, "BUY", "call", opp.setup.longCall, lc.symbol, lc.bid, lc.ask, lc.last);
+      pushLeg(legs, "SELL", "put", opp.setup.shortPut, sp.symbol, sp.bid, sp.ask, sp.last);
+      pushLeg(legs, "BUY", "put", opp.setup.longPut, lp.symbol, lp.bid, lp.ask, lp.last);
+
+      return legs;
+    }
+
+    // Debit spreads
+    if (opp.strategy === "Bull Call Spread" && opp.setup?.longCall != null) {
+      const lc = opp.setup.longCall_leg || {};
+      const sc = opp.setup.shortCall_leg || {};
+      pushLeg(legs, "BUY", "call", opp.setup.longCall, lc.symbol, lc.bid, lc.ask, lc.last);
+      pushLeg(legs, "SELL", "call", opp.setup.shortCall, sc.symbol, sc.bid, sc.ask, sc.last);
+      return legs;
+    }
+    if (opp.strategy === "Bear Put Spread" && opp.setup?.longPut != null) {
+      const lp = opp.setup.longPut_leg || {};
+      const sp = opp.setup.shortPut_leg || {};
+      pushLeg(legs, "BUY", "put", opp.setup.longPut, lp.symbol, lp.bid, lp.ask, lp.last);
+      pushLeg(legs, "SELL", "put", opp.setup.shortPut, sp.symbol, sp.bid, sp.ask, sp.last);
+      return legs;
+    }
+
+    // Credit Spread (your existing 'Credit Spread' case in renderTradeDetails)
+    if (opp.strategy === "Credit Spread" && opp.setup?.shortCall != null) {
+      pushLeg(legs, "SELL", "call", opp.setup.shortCall, null, null, null, null);
+      pushLeg(legs, "BUY", "call", opp.setup.longCall, null, null, null, null);
+      return legs;
+    }
+
+    // Long Straddle (if present)
+    if (opp.strategy === "Long Straddle" && opp.setup?.callStrike != null) {
+      pushLeg(legs, "BUY", "call", opp.setup.callStrike, null, null, null, null);
+      pushLeg(legs, "BUY", "put", opp.setup.putStrike, null, null, null, null);
+      return legs;
+    }
+
+    return legs;
+  };
+
+  const computeEntryValueFromOpp = (opp, legs) => {
+    // We store entryValue as the position's mark-value (per 1 spread/condor) so P&L = (currentValue - entryValue)*100*qty
+    const costNum = toNum(opp.cost);
+    if (costNum == null) return null;
+
+    // If we have per-leg entry mid, use them:
+    const allLegHaveEntry = legs.every((l) => {
+      const m = midFrom(l.entryBid, l.entryAsk, l.entryLast);
+      return m != null;
+    });
+    if (allLegHaveEntry) {
+      let v = 0;
+      legs.forEach((l) => {
+        const m = midFrom(l.entryBid, l.entryAsk, l.entryLast);
+        const sign = l.action === "BUY" ? 1 : -1;
+        v += sign * m;
+      });
+      return v;
+    }
+
+    // Otherwise:
+    // - debit-spread & long strategies: entryValue ~ +debit
+    // - credit/iron-condor short strategies: legs are SELL-heavy => entryValue ~ -credit
+    if (opp.type === "debit-spread" || opp.strategy?.includes("Long")) return Math.abs(costNum);
+    if (opp.type === "credit-spread" || opp.type === "iron-condor" || opp.strategy?.includes("Condor") || opp.strategy?.includes("Theta")) {
+      return -Math.abs(costNum);
+    }
+    // fallback: assume debit
+    return costNum;
+  };
+
+  const addPaperTradeFromOpportunity = (opp) => {
+    try {
+      const legs = buildLegsFromOpportunity(opp);
+      if (!legs.length) {
+        Alert.alert("Can't add trade", "This opportunity type doesn't include enough leg info to paper trade.");
+        return;
+      }
+
+      const entryValue = computeEntryValueFromOpp(opp, legs); // per 1 contract/spread unit (in option price units)
+      const trade = {
+        id: `pt-opp-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        source: "smart-opportunity",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+
+        underlying: opp.symbol,
+        strategy: opp.strategy,
+        type: opp.type,
+        expiration: opp.expiration,
+        dteAtEntry: opp.daysToExpiry ?? yyyyMmDdToDte(opp.expiration),
+        qty: 1,
+
+        // entryValue is the position's net mark (BUY positive / SELL negative) per 1 unit
+        entryValue,
+        entryLabel: opp.type === "iron-condor" || opp.type === "credit-spread" ? `Credit ~$${opp.cost}` : `Debit ~$${opp.cost}`,
+        legs,
+
+        // Notes
+        whySpotted: opp.reason || "",
+        userNotes: "",
+        meta: {
+          probability: opp.probability,
+          score: opp.score,
+          rr: opp.rewardRiskRatio,
+          maxLoss: opp.maxLoss,
+          maxProfit: opp.maxProfit,
+          ivp: opp.ivPercentile,
+          setup: opp.setup,
+        },
+
+        // last price snapshot
+        lastPriceUpdateAt: null,
+        currentValue: null,
+        pnl: null,
+        pnlPct: null,
+      };
+
+      setPaperPortfolio((prev) => [trade, ...prev]);
+      Alert.alert("Added to Portfolio", "Paper trade added. Go to Portfolio tab and press Get Current Prices to update P&L.");
+    } catch (e) {
+      Alert.alert("Error", String(e?.message || e));
+    }
+  };
+
+  const addPaperTradeFromUnusual = (u) => {
+    // Default assumption: you're buying the unusual contract (LONG)
+    const entryMid = midFrom(u.bid, u.ask, u.last);
+    const trade = {
+      id: `pt-unusual-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      source: "unusual-options",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+
+      underlying: u.underlying,
+      strategy: "Unusual Options (Single)",
+      type: "single",
+      expiration: u.expiration,
+      dteAtEntry: yyyyMmDdToDte(u.expiration),
+      qty: 1,
+
+      entryValue: entryMid != null ? +entryMid : null, // long 1 option = +mid
+      entryLabel: entryMid != null ? `Mid ~$${fmt2(entryMid)}` : "Mid unavailable",
+      legs: [
+        {
+          action: "BUY",
+          optionType: String(u.optionType || "").toLowerCase().includes("put") ? "put" : "call",
+          strike: toNum(u.strike),
+          expiration: u.expiration,
+          symbol: u.symbol || null,
+          entryBid: toNum(u.bid),
+          entryAsk: toNum(u.ask),
+          entryLast: toNum(u.last),
+        },
+      ],
+
+      // Notes
+      whySpotted: u.reason || "",
+      userNotes: "",
+      meta: {
+        score: u.score,
+        voi: u.voi,
+        volume: u.volume,
+        openInterest: u.openInterest,
+        iv: u.iv,
+        delta: u.delta,
+      },
+
+      lastPriceUpdateAt: null,
+      currentValue: null,
+      pnl: null,
+      pnlPct: null,
+    };
+
+    setPaperPortfolio((prev) => [trade, ...prev]);
+    Alert.alert("Added to Portfolio", "Paper trade added. Go to Portfolio tab and press Get Current Prices to update P&L.");
+  };
+
+  // Resolve missing option symbols using Tradier chains (ONLY on demand)
+  const resolveMissingLegSymbols = async (trades) => {
+    // Build unique underlying+expiration pairs where any leg is missing symbol
+    const needs = [];
+    trades.forEach((t) => {
+      (t.legs || []).forEach((l) => {
+        if (!l.symbol && t.underlying && l.expiration) {
+          needs.push(`${t.underlying}@@${l.expiration}`);
+        }
+      });
+    });
+    const uniqNeeds = uniq(needs);
+
+    if (!uniqNeeds.length) return trades;
+
+    const chainCache = {}; // key => list of options
+    for (let i = 0; i < uniqNeeds.length; i++) {
+      const key = uniqNeeds[i];
+      const [underlying, expiration] = key.split("@@");
+      try {
+        const chain = await tradierFetchJson("/v1/markets/options/chains", {
+          symbol: underlying,
+          expiration,
+          greeks: "false",
+        });
+
+        const list = chain?.options?.option;
+        const arr = Array.isArray(list) ? list : list ? [list] : [];
+        chainCache[key] = arr;
+      } catch (e) {
+        // keep going; we'll leave unresolved
+        chainCache[key] = [];
+      }
+      await sleep(80);
+    }
+
+    // Fill in symbols by matching strike + optionType
+    const patched = trades.map((t) => {
+      const legs = (t.legs || []).map((l) => {
+        if (l.symbol) return l;
+        const key = `${t.underlying}@@${l.expiration}`;
+        const arr = chainCache[key] || [];
+        const targetStrike = toNum(l.strike);
+
+        // Tradier chain has option_type like "call"/"put"
+        const match = arr.find((o) => {
+          const oType = String(o.option_type || o.optionType || o.type || "").toLowerCase();
+          const oStrike = toNum(o.strike);
+          return oType === String(l.optionType).toLowerCase() && oStrike != null && targetStrike != null && Math.abs(oStrike - targetStrike) < 1e-9;
+        });
+
+        if (!match?.symbol) return l;
+        return { ...l, symbol: match.symbol };
+      });
+      return { ...t, legs };
+    });
+
+    return patched;
+  };
+
+  // Update portfolio prices (ONLY when button pressed)
+  const updatePortfolioPrices = async () => {
+    if (!paperPortfolio.length) {
+      Alert.alert("Portfolio empty", "Add a paper trade from Opportunities or Unusual Options first.");
+      return;
+    }
+    setPortfolioLoadingPrices(true);
+    setPortfolioError("");
+
+    try {
+      // 1) Resolve missing option symbols (chains ON DEMAND)
+      let trades = await resolveMissingLegSymbols(paperPortfolio);
+
+      // 2) Collect option symbols
+      const optionSymbols = [];
+      trades.forEach((t) => {
+        (t.legs || []).forEach((l) => {
+          if (l.symbol) optionSymbols.push(l.symbol);
+        });
+      });
+      const uniqOptionSymbols = uniq(optionSymbols);
+
+      if (!uniqOptionSymbols.length) {
+        Alert.alert("No symbols", "Could not resolve option symbols for portfolio trades.");
+        setPaperPortfolio(trades);
+        return;
+      }
+
+      // 3) Quote all option symbols (batched)
+      const quoteMap = await tradierGetQuotesBatched(uniqOptionSymbols, 120);
+
+      // 4) Compute currentValue per trade: sum( BUY mid ) - sum( SELL mid )
+      const updated = trades.map((t) => {
+        const qty = toNum(t.qty) || 1;
+        let cur = 0;
+        let any = false;
+
+        const legs = (t.legs || []).map((l) => {
+          const q = l.symbol ? quoteMap[l.symbol] : null;
+          const m = q ? midFrom(q.bid, q.ask, q.last) : null;
+          const sign = l.action === "BUY" ? 1 : -1;
+
+          if (m != null) {
+            cur += sign * m;
+            any = true;
+          }
+
+          return {
+            ...l,
+            lastMid: m,
+            lastBid: q?.bid ?? null,
+            lastAsk: q?.ask ?? null,
+            lastLast: q?.last ?? null,
+          };
+        });
+
+        const entryValue = toNum(t.entryValue);
+        const currentValue = any ? cur : null;
+
+        let pnl = null;
+        let pnlPct = null;
+        if (entryValue != null && currentValue != null) {
+          pnl = (currentValue - entryValue) * 100 * qty;
+          const denom = Math.abs(entryValue * 100 * qty);
+          pnlPct = denom > 0 ? (pnl / denom) * 100 : null;
+        }
+
+        return {
+          ...t,
+          legs,
+          currentValue,
+          pnl,
+          pnlPct,
+          lastPriceUpdateAt: new Date().toISOString(),
+        };
+      });
+
+      setPaperPortfolio(updated);
+      setPortfolioLastUpdated(new Date().toISOString());
+    } catch (e) {
+      setPortfolioError(String(e?.message || e));
+    } finally {
+      setPortfolioLoadingPrices(false);
+    }
+  };
+
+  // ---------------------------
   // UI helpers
   // ---------------------------
   const getCurrentOpportunities = () => {
@@ -1106,158 +1498,165 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     }
   };
 
-
   const getTabTitle = () => {
-    switch(activeTab) {
-      case 'high': return `High Probability (${opportunities.length})`;
-      case 'medium': return `Medium Probability (${mediumProbOpportunities.length})`;
-      case 'low': return `Low Probability (${lowProbOpportunities.length})`;
-      case 'near-miss': return `Near Miss (${nearMissOpportunities.length})`;
-      default: return `Opportunities (${opportunities.length})`;
+    switch (activeTab) {
+      case "high":
+        return `High Probability (${opportunities.length})`;
+      case "medium":
+        return `Medium Probability (${mediumProbOpportunities.length})`;
+      case "low":
+        return `Low Probability (${lowProbOpportunities.length})`;
+      case "near-miss":
+        return `Near Miss (${nearMissOpportunities.length})`;
+      default:
+        return `Opportunities (${opportunities.length})`;
     }
   };
 
   const getTabDescription = () => {
-    switch(activeTab) {
-      case 'high': return '70%+ probability, best risk/reward';
-      case 'medium': return '60-69% probability, moderate risk';
-      case 'low': return '50-59% probability, higher risk/reward';
-      case 'near-miss': return 'Missed criteria by small margin';
-      default: return 'Select a category';
+    switch (activeTab) {
+      case "high":
+        return "70%+ probability, best risk/reward";
+      case "medium":
+        return "60-69% probability, moderate risk";
+      case "low":
+        return "50-59% probability, higher risk/reward";
+      case "near-miss":
+        return "Missed criteria by small margin";
+      default:
+        return "Select a category";
     }
   };
 
   const renderTradeDetails = (opp) => {
     if (!opp || !opp.setup) return null;
-    
+
     const tradeType = opp.type;
-    const isCredit = tradeType.includes('credit') || tradeType === 'theta-decay' || tradeType === 'iron-condor';
-    const isDebit = tradeType.includes('debit');
-    const isStraddle = tradeType === 'volatility';
-    
+    const isCredit = tradeType.includes("credit") || tradeType === "theta-decay" || tradeType === "iron-condor";
+    const isDebit = tradeType.includes("debit");
+    const isStraddle = tradeType === "volatility";
+
     let tradeInstructions = [];
     let optionLegs = [];
     let maxProfit = opp.maxProfit;
     let maxLoss = opp.maxLoss;
     let breakevenPoints = [];
     let currentStockPrice = opp.currentPrice || 0;
-    
-    switch(opp.strategy) {
-      case 'Iron Condor':
-      case 'Iron Condor (Near Miss)':
+
+    switch (opp.strategy) {
+      case "Iron Condor":
+      case "Iron Condor (Near Miss)":
         const { shortCall, longCall, shortPut, longPut } = opp.setup;
         const putDistance = ((currentStockPrice - shortPut) / currentStockPrice * 100).toFixed(1);
         const callDistance = ((shortCall - currentStockPrice) / currentStockPrice * 100).toFixed(1);
-        
+
         tradeInstructions = [
           `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
-          '',
-          'SELL Put Spread:',
+          "",
+          "SELL Put Spread:",
           `  • SELL Put @ $${shortPut} strike (${putDistance}% OTM)`,
           `  • BUY Put @ $${longPut} strike (lower strike)`,
-          '',
-          'SELL Call Spread:',
+          "",
+          "SELL Call Spread:",
           `  • SELL Call @ $${shortCall} strike (${callDistance}% OTM)`,
           `  • BUY Call @ $${longCall} strike (higher strike)`,
-          '',
+          "",
           `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
-          `Net Credit: $${opp.cost} per contract`
+          `Net Credit: $${opp.cost} per contract`,
         ];
-        
+
         optionLegs = [
-          { action: 'SELL', type: 'PUT', strike: shortPut, premium: 'Credit', distance: `${putDistance}% OTM` },
-          { action: 'BUY', type: 'PUT', strike: longPut, premium: 'Debit', distance: '' },
-          { action: 'SELL', type: 'CALL', strike: shortCall, premium: 'Credit', distance: `${callDistance}% OTM` },
-          { action: 'BUY', type: 'CALL', strike: longCall, premium: 'Debit', distance: '' }
+          { action: "SELL", type: "PUT", strike: shortPut, premium: "Credit", distance: `${putDistance}% OTM` },
+          { action: "BUY", type: "PUT", strike: longPut, premium: "Debit", distance: "" },
+          { action: "SELL", type: "CALL", strike: shortCall, premium: "Credit", distance: `${callDistance}% OTM` },
+          { action: "BUY", type: "CALL", strike: longCall, premium: "Debit", distance: "" },
         ];
-        
+
         const netCredit = parseFloat(opp.cost);
         breakevenPoints = [
           `Put side: $${shortPut} - $${netCredit.toFixed(2)} = $${(shortPut - netCredit).toFixed(2)} (${((shortPut - netCredit - currentStockPrice) / currentStockPrice * 100).toFixed(1)}% from current)`,
-          `Call side: $${shortCall} + $${netCredit.toFixed(2)} = $${(shortCall + netCredit).toFixed(2)} (${((shortCall + netCredit - currentStockPrice) / currentStockPrice * 100).toFixed(1)}% from current)`
+          `Call side: $${shortCall} + $${netCredit.toFixed(2)} = $${(shortCall + netCredit).toFixed(2)} (${((shortCall + netCredit - currentStockPrice) / currentStockPrice * 100).toFixed(1)}% from current)`,
         ];
         break;
-        
-      case 'Bull Call Spread':
-      case 'Bear Put Spread':
-        const isBull = opp.strategy.includes('Bull');
+
+      case "Bull Call Spread":
+      case "Bear Put Spread":
+        const isBull = opp.strategy.includes("Bull");
         const longStrike = isBull ? opp.setup.longCall : opp.setup.longPut;
         const shortStrike = isBull ? opp.setup.shortCall : opp.setup.shortPut;
-        const optionType = isBull ? 'CALL' : 'PUT';
-        
-        const longDistance = isBull 
+        const optionType = isBull ? "CALL" : "PUT";
+
+        const longDistance = isBull
           ? ((longStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1)
           : ((currentStockPrice - longStrike) / currentStockPrice * 100).toFixed(1);
         const shortDistance = isBull
           ? ((shortStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1)
           : ((currentStockPrice - shortStrike) / currentStockPrice * 100).toFixed(1);
-        
+
         tradeInstructions = [
           `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
-          '',
-          `${isBull ? 'BULLISH' : 'BEARISH'} VERTICAL SPREAD:`,
-          `1. BUY ${optionType} @ $${longStrike} strike (${isBull ? longDistance + '% ITM' : longDistance + '% OTM'})`,
-          `2. SELL ${optionType} @ $${shortStrike} strike (${isBull ? shortDistance + '% OTM' : shortDistance + '% ITM'})`,
-          '',
+          "",
+          `${isBull ? "BULLISH" : "BEARISH"} VERTICAL SPREAD:`,
+          `1. BUY ${optionType} @ $${longStrike} strike (${isBull ? longDistance + "% ITM" : longDistance + "% OTM"})`,
+          `2. SELL ${optionType} @ $${shortStrike} strike (${isBull ? shortDistance + "% OTM" : shortDistance + "% ITM"})`,
+          "",
           `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
-          `Net Debit: $${opp.cost} per contract`
+          `Net Debit: $${opp.cost} per contract`,
         ];
-        
+
         optionLegs = [
-          { action: 'BUY', type: optionType, strike: longStrike, premium: 'Debit', distance: `${longDistance}% ${isBull ? 'ITM' : 'OTM'}` },
-          { action: 'SELL', type: optionType, strike: shortStrike, premium: 'Credit', distance: `${shortDistance}% ${isBull ? 'OTM' : 'ITM'}` }
+          { action: "BUY", type: optionType, strike: longStrike, premium: "Debit", distance: `${longDistance}% ${isBull ? "ITM" : "OTM"}` },
+          { action: "SELL", type: optionType, strike: shortStrike, premium: "Credit", distance: `${shortDistance}% ${isBull ? "OTM" : "ITM"}` },
         ];
-        
+
         const debit = parseFloat(opp.cost);
         if (isBull) {
           const breakevenPrice = longStrike + debit;
           const breakevenDistance = ((breakevenPrice - currentStockPrice) / currentStockPrice * 100).toFixed(1);
           breakevenPoints = [
             `Breakeven: $${longStrike} + $${debit.toFixed(2)} = $${breakevenPrice.toFixed(2)} (${breakevenDistance}% from current)`,
-            `Profit Zone: Stock between $${breakevenPrice.toFixed(2)} and $${shortStrike}`
+            `Profit Zone: Stock between $${breakevenPrice.toFixed(2)} and $${shortStrike}`,
           ];
         } else {
           const breakevenPrice = longStrike - debit;
           const breakevenDistance = ((currentStockPrice - breakevenPrice) / currentStockPrice * 100).toFixed(1);
           breakevenPoints = [
             `Breakeven: $${longStrike} - $${debit.toFixed(2)} = $${breakevenPrice.toFixed(2)} (${breakevenDistance}% from current)`,
-            `Profit Zone: Stock between $${shortStrike} and $${breakevenPrice.toFixed(2)}`
+            `Profit Zone: Stock between $${shortStrike} and $${breakevenPrice.toFixed(2)}`,
           ];
         }
         break;
-        
-      case 'Theta Call Sale':
-      case 'Theta Put Sale':
-      case 'Naked Put Sale':
-        const isCall = opp.strategy.includes('Call');
+
+      case "Theta Call Sale":
+      case "Theta Put Sale":
+      case "Naked Put Sale":
+        const isCall = opp.strategy.includes("Call");
         const strike = opp.setup.strike;
-        
+
         const strikeDistance = isCall
           ? ((strike - currentStockPrice) / currentStockPrice * 100).toFixed(1)
           : ((currentStockPrice - strike) / currentStockPrice * 100).toFixed(1);
-        
+
         tradeInstructions = [
           `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
-          '',
-          'NAKED OPTION SALE:',
-          `SELL ${isCall ? 'CALL' : 'PUT'} @ $${strike} strike (${strikeDistance}% OTM)`,
-          '',
+          "",
+          "NAKED OPTION SALE:",
+          `SELL ${isCall ? "CALL" : "PUT"} @ $${strike} strike (${strikeDistance}% OTM)`,
+          "",
           `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
           `Credit Received: $${opp.cost} per contract`,
-          '',
-          '⚠️ WARNING: Unlimited risk! Use stop losses.'
+          "",
+          "⚠️ WARNING: Unlimited risk! Use stop losses.",
         ];
-        
-        optionLegs = [
-          { action: 'SELL', type: isCall ? 'CALL' : 'PUT', strike: strike, premium: 'Credit', distance: `${strikeDistance}% OTM` }
-        ];
-        
+
+        optionLegs = [{ action: "SELL", type: isCall ? "CALL" : "PUT", strike: strike, premium: "Credit", distance: `${strikeDistance}% OTM` }];
+
         const credit = parseFloat(opp.cost);
         if (isCall) {
           const breakevenPrice = strike + credit;
           const breakevenDistance = ((breakevenPrice - currentStockPrice) / currentStockPrice * 100).toFixed(1);
           breakevenPoints = [`Breakeven: Stock at $${breakevenPrice.toFixed(2)} (${breakevenDistance}% from current)`];
-          maxLoss = 'Unlimited (stock above breakeven)';
+          maxLoss = "Unlimited (stock above breakeven)";
         } else {
           const breakevenPrice = strike - credit;
           const breakevenDistance = ((currentStockPrice - breakevenPrice) / currentStockPrice * 100).toFixed(1);
@@ -1265,84 +1664,84 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           maxLoss = `$${strike} (if stock goes to $0)`;
         }
         break;
-        
-      case 'Long Straddle':
+
+      case "Long Straddle":
         const { callStrike, putStrike } = opp.setup;
-        
+
         // const callDistance = ((callStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1);
         // const putDistance = ((currentStockPrice - putStrike) / currentStockPrice * 100).toFixed(1);
         callDistance = ((callStrike - currentStockPrice) / currentStockPrice * 100).toFixed(1);
         putDistance = ((currentStockPrice - putStrike) / currentStockPrice * 100).toFixed(1);
-        
+
         tradeInstructions = [
           `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
-          '',
-          'LONG STRADDLE:',
-          `1. BUY CALL @ $${callStrike} strike (${Math.abs(callDistance)}% ${parseFloat(callDistance) > 0 ? 'OTM' : 'ITM'})`,
-          `2. BUY PUT @ $${putStrike} strike (${Math.abs(putDistance)}% ${parseFloat(putDistance) > 0 ? 'OTM' : 'ITM'})`,
-          '',
+          "",
+          "LONG STRADDLE:",
+          `1. BUY CALL @ $${callStrike} strike (${Math.abs(callDistance)}% ${parseFloat(callDistance) > 0 ? "OTM" : "ITM"})`,
+          `2. BUY PUT @ $${putStrike} strike (${Math.abs(putDistance)}% ${parseFloat(putDistance) > 0 ? "OTM" : "ITM"})`,
+          "",
           `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
           `Total Debit: $${opp.cost} per contract`,
-          '',
-          '✅ Profit if stock moves significantly in EITHER direction'
+          "",
+          "✅ Profit if stock moves significantly in EITHER direction",
         ];
-        
+
         optionLegs = [
-          { action: 'BUY', type: 'CALL', strike: callStrike, premium: 'Debit', distance: `${Math.abs(callDistance)}% ${parseFloat(callDistance) > 0 ? 'OTM' : 'ITM'}` },
-          { action: 'BUY', type: 'PUT', strike: putStrike, premium: 'Debit', distance: `${Math.abs(putDistance)}% ${parseFloat(putDistance) > 0 ? 'OTM' : 'ITM'}` }
+          { action: "BUY", type: "CALL", strike: callStrike, premium: "Debit", distance: `${Math.abs(callDistance)}% ${parseFloat(callDistance) > 0 ? "OTM" : "ITM"}` },
+          { action: "BUY", type: "PUT", strike: putStrike, premium: "Debit", distance: `${Math.abs(putDistance)}% ${parseFloat(putDistance) > 0 ? "OTM" : "ITM"}` },
         ];
-        
+
         const totalDebit = parseFloat(opp.cost);
         const upperBreakeven = callStrike + totalDebit;
         const lowerBreakeven = putStrike - totalDebit;
         const upperDistance = ((upperBreakeven - currentStockPrice) / currentStockPrice * 100).toFixed(1);
         const lowerDistance = ((currentStockPrice - lowerBreakeven) / currentStockPrice * 100).toFixed(1);
-        
+
         breakevenPoints = [
           `Upper Breakeven: $${callStrike} + $${totalDebit.toFixed(2)} = $${upperBreakeven.toFixed(2)} (${upperDistance}% from current)`,
-          `Lower Breakeven: $${putStrike} - $${totalDebit.toFixed(2)} = $${lowerBreakeven.toFixed(2)} (${lowerDistance}% from current)`
+          `Lower Breakeven: $${putStrike} - $${totalDebit.toFixed(2)} = $${lowerBreakeven.toFixed(2)} (${lowerDistance}% from current)`,
         ];
-        maxProfit = 'Unlimited (in either direction)';
+        maxProfit = "Unlimited (in either direction)";
         break;
-        
-      case 'Credit Spread':
+
+      case "Credit Spread":
         const { shortCall: creditShortCall, longCall: creditLongCall } = opp.setup;
-        
+
         const shortCallDistance = ((creditShortCall - currentStockPrice) / currentStockPrice * 100).toFixed(1);
         const longCallDistance = ((creditLongCall - currentStockPrice) / currentStockPrice * 100).toFixed(1);
-        
+
         tradeInstructions = [
           `Current ${opp.symbol} Price: $${currentStockPrice.toFixed(2)}`,
-          '',
-          'BEAR CALL SPREAD:',
+          "",
+          "BEAR CALL SPREAD:",
           `1. SELL CALL @ $${creditShortCall} strike (${shortCallDistance}% OTM)`,
           `2. BUY CALL @ $${creditLongCall} strike (${longCallDistance}% OTM)`,
-          '',
+          "",
           `Expiration: ${opp.expiration} (${opp.daysToExpiry} days)`,
-          `Net Credit: $${opp.cost} per contract`
+          `Net Credit: $${opp.cost} per contract`,
         ];
-        
+
         optionLegs = [
-          { action: 'SELL', type: 'CALL', strike: creditShortCall, premium: 'Credit', distance: `${shortCallDistance}% OTM` },
-          { action: 'BUY', type: 'CALL', strike: creditLongCall, premium: 'Debit', distance: `${longCallDistance}% OTM` }
+          { action: "SELL", type: "CALL", strike: creditShortCall, premium: "Credit", distance: `${shortCallDistance}% OTM` },
+          { action: "BUY", type: "CALL", strike: creditLongCall, premium: "Debit", distance: `${longCallDistance}% OTM` },
         ];
-        
+
         const bearCredit = parseFloat(opp.cost);
         const bearBreakeven = creditShortCall + bearCredit;
         const bearDistance = ((bearBreakeven - currentStockPrice) / currentStockPrice * 100).toFixed(1);
         breakevenPoints = [`Breakeven: Stock at $${bearBreakeven.toFixed(2)} (${bearDistance}% from current)`];
         break;
     }
-    
+
     return (
       <ScrollView style={styles.tradeDetailsContainer}>
         <Text style={styles.tradeDetailsTitle}>📋 EXACT TRADE TO MAKE</Text>
-        
+
         <View style={styles.currentPriceBanner}>
           <Text style={styles.currentPriceLabel}>Current {opp.symbol} Price:</Text>
           <Text style={styles.currentPriceValue}>${currentStockPrice.toFixed(2)}</Text>
         </View>
-        
+
         <View style={styles.tradeSummary}>
           <View style={styles.tradeSummaryRow}>
             <Text style={styles.tradeSummaryLabel}>Strategy:</Text>
@@ -1350,13 +1749,13 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           </View>
           <View style={styles.tradeSummaryRow}>
             <Text style={styles.tradeSummaryLabel}>Direction:</Text>
-            <Text style={[
-              styles.tradeSummaryValue,
-              opp.greeks.delta > 0.3 ? styles.bullishText : 
-              opp.greeks.delta < -0.3 ? styles.bearishText : styles.neutralText
-            ]}>
-              {opp.greeks.delta > 0.3 ? 'BULLISH' : 
-               opp.greeks.delta < -0.3 ? 'BEARISH' : 'NEUTRAL'}
+            <Text
+              style={[
+                styles.tradeSummaryValue,
+                opp.greeks.delta > 0.3 ? styles.bullishText : opp.greeks.delta < -0.3 ? styles.bearishText : styles.neutralText,
+              ]}
+            >
+              {opp.greeks.delta > 0.3 ? "BULLISH" : opp.greeks.delta < -0.3 ? "BEARISH" : "NEUTRAL"}
             </Text>
           </View>
           <View style={styles.tradeSummaryRow}>
@@ -1368,43 +1767,28 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
             <Text style={styles.tradeSummaryValue}>{opp.daysToExpiry} days</Text>
           </View>
         </View>
-        
+
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>📊 Option Legs:</Text>
           {optionLegs.map((leg, index) => (
             <View key={index} style={styles.optionLeg}>
-              <View style={[
-                styles.legAction,
-                leg.action === 'BUY' ? styles.buyAction : styles.sellAction
-              ]}>
-                <Text style={styles.legActionText}>
-                  {leg.action}
-                </Text>
+              <View style={[styles.legAction, leg.action === "BUY" ? styles.buyAction : styles.sellAction]}>
+                <Text style={styles.legActionText}>{leg.action}</Text>
               </View>
-              <View style={[
-                styles.legType,
-                leg.type === 'CALL' ? styles.callType : styles.putType
-              ]}>
-                <Text style={styles.legTypeText}>
-                  {leg.type}
-                </Text>
+              <View style={[styles.legType, leg.type === "CALL" ? styles.callType : styles.putType]}>
+                <Text style={styles.legTypeText}>{leg.type}</Text>
               </View>
               <View style={styles.legStrikeContainer}>
                 <Text style={styles.legStrike}>${leg.strike}</Text>
-                {leg.distance ? (
-                  <Text style={styles.legDistance}>{leg.distance}</Text>
-                ) : null}
+                {leg.distance ? <Text style={styles.legDistance}>{leg.distance}</Text> : null}
               </View>
-              <Text style={[
-                styles.legPremium,
-                leg.premium === 'Credit' ? styles.creditText : styles.debitText
-              ]}>
+              <Text style={[styles.legPremium, leg.premium === "Credit" ? styles.creditText : styles.debitText]}>
                 {leg.premium}
               </Text>
             </View>
           ))}
         </View>
-        
+
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>📝 Step-by-Step Instructions:</Text>
           {tradeInstructions.map((line, index) => (
@@ -1413,37 +1797,28 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
             </Text>
           ))}
         </View>
-        
+
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>⚖️ Risk/Reward Analysis:</Text>
-          
+
           <View style={styles.riskRewardGrid}>
             <View style={styles.riskRewardItem}>
               <Text style={styles.riskRewardLabel}>Max Profit</Text>
-              <Text style={[styles.riskRewardValue, styles.profitValue]}>
-                ${maxProfit}
-              </Text>
+              <Text style={[styles.riskRewardValue, styles.profitValue]}>${maxProfit}</Text>
               <Text style={styles.riskRewardDesc}>
-                {isCredit ? 'Keep entire credit if expires OTM' : 
-                 isDebit ? 'Difference between strikes minus cost' :
-                 'Unlimited if stock moves enough'}
+                {isCredit ? "Keep entire credit if expires OTM" : isDebit ? "Difference between strikes minus cost" : "Unlimited if stock moves enough"}
               </Text>
             </View>
-            
+
             <View style={styles.riskRewardItem}>
               <Text style={styles.riskRewardLabel}>Max Loss</Text>
-              <Text style={[styles.riskRewardValue, styles.lossValue]}>
-                ${maxLoss}
-              </Text>
+              <Text style={[styles.riskRewardValue, styles.lossValue]}>${maxLoss}</Text>
               <Text style={styles.riskRewardDesc}>
-                {isCredit ? 'Difference between strikes minus credit' :
-                 isDebit ? 'Total debit paid' :
-                 opp.strategy.includes('Naked') ? 'Unlimited (use stops!)' :
-                 'Difference between strikes'}
+                {isCredit ? "Difference between strikes minus credit" : isDebit ? "Total debit paid" : opp.strategy.includes("Naked") ? "Unlimited (use stops!)" : "Difference between strikes"}
               </Text>
             </View>
           </View>
-          
+
           <View style={styles.breakevenContainer}>
             <Text style={styles.breakevenTitle}>🎯 Breakeven Points:</Text>
             {breakevenPoints.map((point, index) => (
@@ -1453,90 +1828,85 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
             ))}
           </View>
         </View>
-        
+
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>📈 Greeks Analysis:</Text>
-          
+
           <View style={styles.greekImpact}>
             <Text style={styles.greekImpactLabel}>Δ Delta {opp.greeks.delta.toFixed(2)}:</Text>
             <Text style={styles.greekImpactText}>
-              {Math.abs(opp.greeks.delta) > 0.4 ? 'Strong directional bias - trade expects price movement' :
-               Math.abs(opp.greeks.delta) > 0.2 ? 'Moderate directional bias' :
-               'Neutral - minimal price sensitivity'}
+              {Math.abs(opp.greeks.delta) > 0.4
+                ? "Strong directional bias - trade expects price movement"
+                : Math.abs(opp.greeks.delta) > 0.2
+                ? "Moderate directional bias"
+                : "Neutral - minimal price sensitivity"}
             </Text>
           </View>
-          
+
           <View style={styles.greekImpact}>
             <Text style={styles.greekImpactLabel}>Θ Theta {opp.greeks.theta.toFixed(2)}:</Text>
             <Text style={styles.greekImpactText}>
-              {opp.greeks.theta > 0 ? `✅ Earns $${Math.abs(opp.greeks.theta).toFixed(2)} per day from time decay` :
-               `❌ Loses $${Math.abs(opp.greeks.theta).toFixed(2)} per day from time decay`}
+              {opp.greeks.theta > 0 ? `✅ Earns $${Math.abs(opp.greeks.theta).toFixed(2)} per day from time decay` : `❌ Loses $${Math.abs(opp.greeks.theta).toFixed(2)} per day from time decay`}
             </Text>
           </View>
-          
+
           <View style={styles.greekImpact}>
             <Text style={styles.greekImpactLabel}>ν Vega {opp.greeks.vega.toFixed(2)}:</Text>
             <Text style={styles.greekImpactText}>
-              {opp.greeks.vega > 0 ? `✅ Profits if IV rises $${Math.abs(opp.greeks.vega).toFixed(2)} per 1% IV increase` :
-               `❌ Loses if IV rises $${Math.abs(opp.greeks.vega).toFixed(2)} per 1% IV increase`}
+              {opp.greeks.vega > 0 ? `✅ Profits if IV rises $${Math.abs(opp.greeks.vega).toFixed(2)} per 1% IV increase` : `❌ Loses if IV rises $${Math.abs(opp.greeks.vega).toFixed(2)} per 1% IV increase`}
             </Text>
           </View>
         </View>
-        
+
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>🔄 Trade Management Rules:</Text>
-          
+
           <View style={styles.managementRule}>
             <Text style={styles.ruleIcon}>🎯</Text>
             <View style={styles.ruleContent}>
               <Text style={styles.ruleTitle}>Profit Target:</Text>
               <Text style={styles.ruleText}>
-                {isCredit ? 'Take profit at 50-75% of max profit' :
-                 isDebit ? 'Take profit at 75-100% of max profit' :
-                 'Take profit when IV expands or price moves significantly'}
+                {isCredit ? "Take profit at 50-75% of max profit" : isDebit ? "Take profit at 75-100% of max profit" : "Take profit when IV expands or price moves significantly"}
               </Text>
             </View>
           </View>
-          
+
           <View style={styles.managementRule}>
             <Text style={styles.ruleIcon}>🛑</Text>
             <View style={styles.ruleContent}>
               <Text style={styles.ruleTitle}>Stop Loss:</Text>
               <Text style={styles.ruleText}>
-                {isCredit ? 'Exit if loss reaches 150-200% of credit received' :
-                 isDebit ? 'Exit if loss reaches 50% of debit paid' :
-                 'Exit if loss reaches 50% of premium paid'}
+                {isCredit ? "Exit if loss reaches 150-200% of credit received" : isDebit ? "Exit if loss reaches 50% of debit paid" : "Exit if loss reaches 50% of premium paid"}
               </Text>
             </View>
           </View>
-          
+
           <View style={styles.managementRule}>
             <Text style={styles.ruleIcon}>📅</Text>
             <View style={styles.ruleContent}>
               <Text style={styles.ruleTitle}>Time Management:</Text>
               <Text style={styles.ruleText}>
-                {opp.daysToExpiry <= 3 ? 'Close before expiration to avoid assignment risk' :
-                 opp.daysToExpiry <= 10 ? 'Monitor daily - gamma risk increases' :
-                 'Weekly monitoring sufficient'}
+                {opp.daysToExpiry <= 3 ? "Close before expiration to avoid assignment risk" : opp.daysToExpiry <= 10 ? "Monitor daily - gamma risk increases" : "Weekly monitoring sufficient"}
               </Text>
             </View>
           </View>
         </View>
-        
+
         <View style={styles.sectionContainer}>
           <Text style={styles.sectionTitle}>💻 How to Enter in Your Broker:</Text>
           <Text style={styles.brokerText}>1. Go to options chain for {opp.symbol}</Text>
           <Text style={styles.brokerText}>2. Select expiration: {opp.expiration}</Text>
-          <Text style={styles.brokerText}>3. Enter as a {optionLegs.length > 2 ? '4-leg' : '2-leg'} order</Text>
+          <Text style={styles.brokerText}>3. Enter as a {optionLegs.length > 2 ? "4-leg" : "2-leg"} order</Text>
           <Text style={styles.brokerText}>4. Use LIMIT order, not market</Text>
-          <Text style={styles.brokerText}>5. Set price: ${opp.cost} {isCredit ? 'credit' : 'debit'}</Text>
+          <Text style={styles.brokerText}>
+            5. Set price: ${opp.cost} {isCredit ? "credit" : "debit"}
+          </Text>
           <Text style={styles.brokerText}>6. Review and submit order</Text>
         </View>
-        
+
         <View style={styles.disclaimerContainer}>
           <Text style={styles.disclaimerText}>
-            ⚠️ This is not financial advice. Trade at your own risk. 
-            Always do your own research and consider paper trading first.
+            ⚠️ This is not financial advice. Trade at your own risk. Always do your own research and consider paper trading first.
           </Text>
         </View>
       </ScrollView>
@@ -1567,19 +1937,14 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     return "#6B7280";
   };
 
-
+  // ✅ MODIFIED (no removals): this modal now adds to paper portfolio
   const renderOpportunityModal = () => {
     if (!selectedOpp) return null;
-    
+
     const strategyColor = getStrategyColor(selectedOpp.type);
-    
+
     return (
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={!!selectedOpp}
-        onRequestClose={() => setSelectedOpp(null)}
-      >
+      <Modal animationType="slide" transparent={true} visible={!!selectedOpp} onRequestClose={() => setSelectedOpp(null)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
@@ -1591,48 +1956,29 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
                   {selectedOpp.probability}% Probability • Score: {selectedOpp.score}
                 </Text>
               </View>
-              <TouchableOpacity 
-                style={styles.modalCloseButton}
-                onPress={() => setSelectedOpp(null)}
-              >
+              <TouchableOpacity style={styles.modalCloseButton} onPress={() => setSelectedOpp(null)}>
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
             </View>
-            
+
             <View style={styles.modalTabs}>
-              <TouchableOpacity 
-                style={[styles.modalTab, modalTab === 'details' && styles.activeModalTab]}
-                onPress={() => setModalTab('details')}
-              >
-                <Text style={[
-                  styles.modalTabText,
-                  modalTab === 'details' && styles.activeModalTabText
-                ]}>
-                  Details
-                </Text>
+              <TouchableOpacity style={[styles.modalTab, modalTab === "details" && styles.activeModalTab]} onPress={() => setModalTab("details")}>
+                <Text style={[styles.modalTabText, modalTab === "details" && styles.activeModalTabText]}>Details</Text>
               </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.modalTab, modalTab === 'trade' && styles.activeModalTab]}
-                onPress={() => setModalTab('trade')}
-              >
-                <Text style={[
-                  styles.modalTabText,
-                  modalTab === 'trade' && styles.activeModalTabText
-                ]}>
-                  Trade Setup
-                </Text>
+              <TouchableOpacity style={[styles.modalTab, modalTab === "trade" && styles.activeModalTab]} onPress={() => setModalTab("trade")}>
+                <Text style={[styles.modalTabText, modalTab === "trade" && styles.activeModalTabText]}>Trade Setup</Text>
               </TouchableOpacity>
             </View>
-            
+
             <View style={styles.modalBody}>
-              {modalTab === 'details' ? (
+              {modalTab === "details" ? (
                 <ScrollView>
                   <View style={styles.modalSection}>
                     <Text style={styles.modalSectionTitle}>Trade Details</Text>
                     <View style={styles.modalGrid}>
                       <View style={styles.modalItem}>
                         <Text style={styles.modalLabel}>Current Price</Text>
-                        <Text style={styles.modalValue}>${selectedOpp.currentPrice?.toFixed(2) || 'N/A'}</Text>
+                        <Text style={styles.modalValue}>${selectedOpp.currentPrice?.toFixed(2) || "N/A"}</Text>
                       </View>
                       <View style={styles.modalItem}>
                         <Text style={styles.modalLabel}>Expiration</Text>
@@ -1648,21 +1994,17 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
                       </View>
                     </View>
                   </View>
-                  
+
                   <View style={styles.modalSection}>
                     <Text style={styles.modalSectionTitle}>Risk Analysis</Text>
                     <View style={styles.modalGrid}>
                       <View style={styles.modalItem}>
                         <Text style={styles.modalLabel}>Max Profit</Text>
-                        <Text style={[styles.modalValue, styles.profitText]}>
-                          ${selectedOpp.maxProfit}
-                        </Text>
+                        <Text style={[styles.modalValue, styles.profitText]}>${selectedOpp.maxProfit}</Text>
                       </View>
                       <View style={styles.modalItem}>
                         <Text style={styles.modalLabel}>Max Loss</Text>
-                        <Text style={[styles.modalValue, styles.lossText]}>
-                          ${selectedOpp.maxLoss}
-                        </Text>
+                        <Text style={[styles.modalValue, styles.lossText]}>${selectedOpp.maxLoss}</Text>
                       </View>
                       <View style={styles.modalItem}>
                         <Text style={styles.modalLabel}>Risk/Reward</Text>
@@ -1670,7 +2012,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
                       </View>
                     </View>
                   </View>
-                  
+
                   {selectedOpp.reason && (
                     <View style={styles.modalSection}>
                       <Text style={styles.modalSectionTitle}>Why This Trade?</Text>
@@ -1682,22 +2024,19 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
                 renderTradeDetails(selectedOpp)
               )}
             </View>
-            
+
             <View style={styles.modalFooter}>
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.modalButton}
                 onPress={() => {
-                  Alert.alert('Trade Executed', 'Trade has been placed in paper trading mode');
+                  addPaperTradeFromOpportunity(selectedOpp);
                   setSelectedOpp(null);
                 }}
               >
-                <Text style={styles.modalButtonText}>📈 Paper Trade This</Text>
+                <Text style={styles.modalButtonText}>📈 Add to Paper Portfolio</Text>
               </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.secondaryButton]}
-                onPress={() => setSelectedOpp(null)}
-              >
+
+              <TouchableOpacity style={[styles.modalButton, styles.secondaryButton]} onPress={() => setSelectedOpp(null)}>
                 <Text style={styles.secondaryButtonText}>Close</Text>
               </TouchableOpacity>
             </View>
@@ -1722,21 +2061,11 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
             {tabs.map((tab) => (
               <TouchableOpacity
                 key={tab.id}
-                style={[
-                  styles.tab,
-                  activeTab === tab.id && styles.activeTab,
-                  activeTab === tab.id && { borderBottomColor: tab.color },
-                ]}
+                style={[styles.tab, activeTab === tab.id && styles.activeTab, activeTab === tab.id && { borderBottomColor: tab.color }]}
                 onPress={() => setActiveTab(tab.id)}
               >
                 <View style={styles.tabContent}>
-                  <Text
-                    style={[
-                      styles.tabLabel,
-                      activeTab === tab.id && styles.activeTabLabel,
-                      activeTab === tab.id && { color: tab.color },
-                    ]}
-                  >
+                  <Text style={[styles.tabLabel, activeTab === tab.id && styles.activeTabLabel, activeTab === tab.id && { color: tab.color }]}>
                     {tab.label}
                   </Text>
                   <View style={[styles.countBadge, { backgroundColor: tab.color + "20" }]}>
@@ -1818,6 +2147,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     );
   };
 
+  // (Kept) Your other modal. Also upgraded to add to portfolio (no removal)
   const renderSelectedModal = () => {
     if (!selectedOpp) return null;
 
@@ -1840,16 +2170,10 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
             </View>
 
             <View style={styles.modalTabs}>
-              <TouchableOpacity
-                style={[styles.modalTab, modalTab === "details" && styles.activeModalTab]}
-                onPress={() => setModalTab("details")}
-              >
+              <TouchableOpacity style={[styles.modalTab, modalTab === "details" && styles.activeModalTab]} onPress={() => setModalTab("details")}>
                 <Text style={[styles.modalTabText, modalTab === "details" && styles.activeModalTabText]}>Details</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalTab, modalTab === "trade" && styles.activeModalTab]}
-                onPress={() => setModalTab("trade")}
-              >
+              <TouchableOpacity style={[styles.modalTab, modalTab === "trade" && styles.activeModalTab]} onPress={() => setModalTab("trade")}>
                 <Text style={[styles.modalTabText, modalTab === "trade" && styles.activeModalTabText]}>Setup</Text>
               </TouchableOpacity>
             </View>
@@ -1886,11 +2210,11 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
               <TouchableOpacity
                 style={styles.modalButton}
                 onPress={() => {
-                  Alert.alert("Paper Trade", "Hook up your broker routing here if/when you want.");
+                  addPaperTradeFromOpportunity(selectedOpp);
                   setSelectedOpp(null);
                 }}
               >
-                <Text style={styles.modalButtonText}>📈 Paper Trade This</Text>
+                <Text style={styles.modalButtonText}>📈 Add to Paper Portfolio</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.modalButton, styles.secondaryButton]} onPress={() => setSelectedOpp(null)}>
                 <Text style={styles.secondaryButtonText}>Close</Text>
@@ -1942,13 +2266,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           <ScrollView style={{ padding: 16 }}>
             <Text style={styles.settingsSection}>Alpaca (Market Data)</Text>
             <Text style={styles.settingsHint}>Uses Data API for screeners + snapshots.</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Alpaca Key ID"
-              value={alpacaKeyId}
-              onChangeText={setAlpacaKeyId}
-              autoCapitalize="none"
-            />
+            <TextInput style={styles.input} placeholder="Alpaca Key ID" value={alpacaKeyId} onChangeText={setAlpacaKeyId} autoCapitalize="none" />
             <TextInput
               style={styles.input}
               placeholder="Alpaca Secret Key"
@@ -1957,19 +2275,13 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
               autoCapitalize="none"
               secureTextEntry
             />
-            <TextInput
-              style={styles.input}
-              placeholder="Alpaca Data Base URL"
-              value={alpacaBase}
-              onChangeText={setAlpacaBase}
-              autoCapitalize="none"
-            />
+            <TextInput style={styles.input} placeholder="Alpaca Data Base URL" value={alpacaBase} onChangeText={setAlpacaBase} autoCapitalize="none" />
 
             <View style={styles.hr} />
 
-            <Text style={styles.settingsSection}>Tradier (Unusual Options)</Text>
+            <Text style={styles.settingsSection}>Tradier (Unusual Options + Portfolio Quotes)</Text>
             <Text style={styles.settingsHint}>
-              We compute “unusual” from volume/open-interest spikes using option chains. :contentReference[oaicite:4]{index=4}
+              Unusual uses chains. Portfolio uses quotes ONLY when you press “Get Current Prices”.
             </Text>
             <TextInput
               style={styles.input}
@@ -1979,13 +2291,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
               autoCapitalize="none"
               secureTextEntry
             />
-            <TextInput
-              style={styles.input}
-              placeholder="Tradier Base URL"
-              value={tradierBase}
-              onChangeText={setTradierBase}
-              autoCapitalize="none"
-            />
+            <TextInput style={styles.input} placeholder="Tradier Base URL" value={tradierBase} onChangeText={setTradierBase} autoCapitalize="none" />
 
             <View style={styles.hr} />
 
@@ -1993,22 +2299,12 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
             <View style={styles.row}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.settingsLabel}>Alpaca top (max 100)</Text>
-                <TextInput
-                  style={styles.input}
-                  value={String(universeTop)}
-                  onChangeText={(t) => setUniverseTop(Number(t || 0))}
-                  keyboardType="numeric"
-                />
+                <TextInput style={styles.input} value={String(universeTop)} onChangeText={(t) => setUniverseTop(Number(t || 0))} keyboardType="numeric" />
               </View>
               <View style={{ width: 12 }} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.settingsLabel}>Max symbols to scan</Text>
-                <TextInput
-                  style={styles.input}
-                  value={String(maxSymbolsToScan)}
-                  onChangeText={(t) => setMaxSymbolsToScan(Number(t || 0))}
-                  keyboardType="numeric"
-                />
+                <TextInput style={styles.input} value={String(maxSymbolsToScan)} onChangeText={(t) => setMaxSymbolsToScan(Number(t || 0))} keyboardType="numeric" />
               </View>
             </View>
 
@@ -2016,22 +2312,12 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
             <View style={styles.row}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.settingsLabel}>Symbols checked</Text>
-                <TextInput
-                  style={styles.input}
-                  value={String(unusualSymbolsLimit)}
-                  onChangeText={(t) => setUnusualSymbolsLimit(Number(t || 0))}
-                  keyboardType="numeric"
-                />
+                <TextInput style={styles.input} value={String(unusualSymbolsLimit)} onChangeText={(t) => setUnusualSymbolsLimit(Number(t || 0))} keyboardType="numeric" />
               </View>
               <View style={{ width: 12 }} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.settingsLabel}>Max contracts/symbol</Text>
-                <TextInput
-                  style={styles.input}
-                  value={String(unusualPerSymbolMax)}
-                  onChangeText={(t) => setUnusualPerSymbolMax(Number(t || 0))}
-                  keyboardType="numeric"
-                />
+                <TextInput style={styles.input} value={String(unusualPerSymbolMax)} onChangeText={(t) => setUnusualPerSymbolMax(Number(t || 0))} keyboardType="numeric" />
               </View>
             </View>
 
@@ -2039,11 +2325,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
 
             <Text style={styles.settingsSection}>Include Sources</Text>
             {Object.entries(includeSources).map(([k, v]) => (
-              <TouchableOpacity
-                key={k}
-                style={[styles.toggleRow, v ? styles.toggleOn : styles.toggleOff]}
-                onPress={() => setIncludeSources((prev) => ({ ...prev, [k]: !prev[k] }))}
-              >
+              <TouchableOpacity key={k} style={[styles.toggleRow, v ? styles.toggleOn : styles.toggleOff]} onPress={() => setIncludeSources((prev) => ({ ...prev, [k]: !prev[k] }))}>
                 <Text style={styles.toggleText}>
                   {v ? "✅" : "⬜"} {k}
                 </Text>
@@ -2063,9 +2345,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
               <Text style={styles.primaryButtonText}>Save</Text>
             </TouchableOpacity>
 
-            <Text style={styles.smallNote}>
-              Note: If you’re using Expo Web, avoid file:// origin. Run a dev server so your origin matches backend CORS.
-            </Text>
+            <Text style={styles.smallNote}>Note: If you’re using Expo Web, avoid file:// origin. Run a dev server so your origin matches backend CORS.</Text>
           </ScrollView>
         </View>
       </View>
@@ -2080,11 +2360,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           Pulled from Alpaca: most-actives (volume), most-actives (trades), movers; then snapshots derive gaps + trending.
         </Text>
 
-        <TouchableOpacity
-          style={styles.primaryButton}
-          onPress={loadUniverseFromAlpaca}
-          disabled={universeLoading}
-        >
+        <TouchableOpacity style={styles.primaryButton} onPress={loadUniverseFromAlpaca} disabled={universeLoading}>
           {universeLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Load Universe from Alpaca</Text>}
         </TouchableOpacity>
 
@@ -2107,9 +2383,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
             </View>
           ))}
         </View>
-        <Text style={[styles.panelTitle, { marginTop: 10, fontSize: 16 }]}>
-          Merged symbols ({universeMeta.mergedRows?.length || 0})
-        </Text>
+        <Text style={[styles.panelTitle, { marginTop: 10, fontSize: 16 }]}>Merged symbols ({universeMeta.mergedRows?.length || 0})</Text>
 
         <View style={styles.universeTableHeader}>
           <Text style={[styles.universeCell, styles.universeCellSym]}>Symbol</Text>
@@ -2123,23 +2397,11 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           const chgText = r.changePct == null ? "—" : `${r.changePct.toFixed(2)}%`;
           const volText = r.volume == null ? "—" : String(r.volume);
 
-          const chgStyle =
-            r.changePct == null
-              ? null
-              : r.changePct >= 0
-              ? styles.pos
-              : styles.neg;
+          const chgStyle = r.changePct == null ? null : r.changePct >= 0 ? styles.pos : styles.neg;
 
           return (
-            <TouchableOpacity
-              key={r.symbol}
-              style={styles.universeRow}
-              onPress={() => openYahoo(r.symbol)}
-              activeOpacity={0.85}
-            >
-              <Text style={[styles.universeCell, styles.universeCellSym, styles.universeLink]}>
-                {r.symbol}
-              </Text>
+            <TouchableOpacity key={r.symbol} style={styles.universeRow} onPress={() => openYahoo(r.symbol)} activeOpacity={0.85}>
+              <Text style={[styles.universeCell, styles.universeCellSym, styles.universeLink]}>{r.symbol}</Text>
               <Text style={[styles.universeCell, styles.universeCellNum]}>{priceText}</Text>
               <Text style={[styles.universeCell, styles.universeCellNum, chgStyle]}>{chgText}</Text>
               <Text style={[styles.universeCell, styles.universeCellNum]}>{volText}</Text>
@@ -2147,9 +2409,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           );
         })}
 
-        <Text style={styles.smallNote}>
-          Tip: Tap a row to open Yahoo Finance for that symbol.
-        </Text>
+        <Text style={styles.smallNote}>Tip: Tap a row to open Yahoo Finance for that symbol.</Text>
       </View>
     </ScrollView>
   );
@@ -2158,9 +2418,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     <View style={{ flex: 1 }}>
       <View style={styles.panel}>
         <Text style={styles.panelTitle}>Unusual Options Activity</Text>
-        <Text style={styles.panelSub}>
-          Computed from Tradier option chains using volume/open-interest spikes (heuristic). :contentReference[oaicite:5]{index=5}
-        </Text>
+        <Text style={styles.panelSub}>Computed from Tradier option chains using volume/open-interest spikes (heuristic).</Text>
 
         <TouchableOpacity style={styles.primaryButton} onPress={loadUnusualOptions} disabled={unusualLoading}>
           {unusualLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Load Unusual Activity</Text>}
@@ -2168,9 +2426,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
 
         {unusualError ? <Text style={styles.errorText}>{unusualError}</Text> : null}
 
-        <Text style={[styles.panelSub, { marginTop: 8 }]}>
-          Showing top {unusualList.length} contracts (from first {Math.min(unusualSymbolsLimit, symbolsToScan.length)} symbols).
-        </Text>
+        <Text style={[styles.panelSub, { marginTop: 8 }]}>Showing top {unusualList.length} contracts (from first {Math.min(unusualSymbolsLimit, symbolsToScan.length)} symbols).</Text>
       </View>
 
       <ScrollView style={{ flex: 1, paddingHorizontal: 12 }}>
@@ -2182,12 +2438,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           </View>
         ) : (
           unusualList.map((u, idx) => (
-            <TouchableOpacity
-              key={`${u.symbol}-${idx}`}
-              style={styles.unusualCard}
-              activeOpacity={0.85}
-              onPress={() => setSelectedUnusual(u)}
-            >
+            <TouchableOpacity key={`${u.symbol}-${idx}`} style={styles.unusualCard} activeOpacity={0.85} onPress={() => setSelectedUnusual(u)}>
               <View style={styles.unusualHeader}>
                 <Text style={styles.unusualUnderlying}>{u.underlying}</Text>
                 <Text style={styles.unusualScore}>Score {u.score.toFixed(1)}</Text>
@@ -2219,20 +2470,13 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
 
   const renderUnusualModal = () => {
     if (!selectedUnusual) return null;
-  
+
     const u = selectedUnusual;
     const mid =
-      (Number(u.bid || 0) + Number(u.ask || 0)) > 0
-        ? ((Number(u.bid || 0) + Number(u.ask || 0)) / 2).toFixed(2)
-        : "—";
-  
+      (Number(u.bid || 0) + Number(u.ask || 0)) > 0 ? ((Number(u.bid || 0) + Number(u.ask || 0)) / 2).toFixed(2) : "—";
+
     return (
-      <Modal
-        animationType="slide"
-        transparent
-        visible
-        onRequestClose={() => setSelectedUnusual(null)}
-      >
+      <Modal animationType="slide" transparent visible onRequestClose={() => setSelectedUnusual(null)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
@@ -2240,14 +2484,11 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
                 <Text style={styles.modalTitle}>{u.underlying} • Unusual Contract</Text>
                 <Text style={styles.modalSubtitle}>{u.symbol}</Text>
               </View>
-              <TouchableOpacity
-                style={styles.modalCloseButton}
-                onPress={() => setSelectedUnusual(null)}
-              >
+              <TouchableOpacity style={styles.modalCloseButton} onPress={() => setSelectedUnusual(null)}>
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
             </View>
-  
+
             <ScrollView style={{ padding: 16 }}>
               <View style={styles.modalSection}>
                 <Text style={styles.modalSectionTitle}>Contract</Text>
@@ -2255,7 +2496,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
                 <Text style={styles.modalTextLine}>Strike: {u.strike}</Text>
                 <Text style={styles.modalTextLine}>Expiration: {u.expiration}</Text>
               </View>
-  
+
               <View style={styles.modalSection}>
                 <Text style={styles.modalSectionTitle}>Liquidity / Flow</Text>
                 <Text style={styles.modalTextLine}>Volume: {u.volume}</Text>
@@ -2263,7 +2504,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
                 <Text style={styles.modalTextLine}>Vol/OI: {u.voi?.toFixed(2)}</Text>
                 <Text style={styles.modalTextLine}>Score: {u.score?.toFixed(1)}</Text>
               </View>
-  
+
               <View style={styles.modalSection}>
                 <Text style={styles.modalSectionTitle}>Pricing</Text>
                 <Text style={styles.modalTextLine}>Bid: {u.bid ?? "—"}</Text>
@@ -2271,33 +2512,31 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
                 <Text style={styles.modalTextLine}>Mid: {mid}</Text>
                 <Text style={styles.modalTextLine}>Last: {u.last ?? "—"}</Text>
               </View>
-  
+
               <View style={styles.modalSection}>
                 <Text style={styles.modalSectionTitle}>Greeks / IV</Text>
                 <Text style={styles.modalTextLine}>IV: {u.iv ? `${(u.iv * 100).toFixed(2)}%` : "—"}</Text>
                 <Text style={styles.modalTextLine}>Delta: {u.delta ?? "—"}</Text>
               </View>
-  
+
               <View style={styles.modalSection}>
                 <Text style={styles.modalSectionTitle}>Why it’s flagged</Text>
                 <Text style={styles.reasonModalText}>{u.reason}</Text>
               </View>
             </ScrollView>
-  
+
             <View style={styles.modalFooter}>
               <TouchableOpacity
                 style={styles.modalButton}
                 onPress={() => {
-                  Alert.alert("Next step", "Hook this into your order ticket / broker routing.");
+                  addPaperTradeFromUnusual(u);
+                  setSelectedUnusual(null);
                 }}
               >
-                <Text style={styles.modalButtonText}>Open Trade Ticket</Text>
+                <Text style={styles.modalButtonText}>📈 Add to Paper Portfolio</Text>
               </TouchableOpacity>
-  
-              <TouchableOpacity
-                style={[styles.modalButton, styles.secondaryButton]}
-                onPress={() => setSelectedUnusual(null)}
-              >
+
+              <TouchableOpacity style={[styles.modalButton, styles.secondaryButton]} onPress={() => setSelectedUnusual(null)}>
                 <Text style={styles.secondaryButtonText}>Close</Text>
               </TouchableOpacity>
             </View>
@@ -2306,13 +2545,12 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
       </Modal>
     );
   };
+
   const renderOppsTab = () => (
     <View style={{ flex: 1 }}>
       <View style={styles.header}>
         <Text style={styles.title}>🎯 Smart Options Opportunities</Text>
-        <Text style={styles.subtitle}>
-          Universe from Alpaca • Options scan uses your backend: {backendUrl}
-        </Text>
+        <Text style={styles.subtitle}>Universe from Alpaca • Options scan uses your backend: {backendUrl}</Text>
       </View>
 
       <View style={styles.topButtonsRow}>
@@ -2332,8 +2570,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           <>
             <Text style={styles.scanButtonText}>🔍 Scan for Opportunities</Text>
             <Text style={styles.scanButtonSubtext}>
-              Analyzes {symbolsToScan.length || 0} symbols (from Alpaca).{" "}
-              {!symbolsToScan.length ? "Load Universe first." : ""}
+              Analyzes {symbolsToScan.length || 0} symbols (from Alpaca). {!symbolsToScan.length ? "Load Universe first." : ""}
             </Text>
           </>
         )}
@@ -2341,14 +2578,8 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
 
       {partialResults ? (
         <View style={styles.partialBanner}>
-          <Text style={styles.partialBannerText}>
-            ⚠️ Scan stopped ({scanStoppedReason || "unknown"}). Showing results from {scanCompletedSymbols} symbols.
-          </Text>
-          <TouchableOpacity
-            style={styles.partialBannerBtn}
-            onPress={() => scanOpportunities()}
-            disabled={loading}
-          >
+          <Text style={styles.partialBannerText}>⚠️ Scan stopped ({scanStoppedReason || "unknown"}). Showing results from {scanCompletedSymbols} symbols.</Text>
+          <TouchableOpacity style={styles.partialBannerBtn} onPress={() => scanOpportunities()} disabled={loading}>
             <Text style={styles.partialBannerBtnText}>{loading ? "..." : "Retry"}</Text>
           </TouchableOpacity>
         </View>
@@ -2389,41 +2620,219 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     </View>
   );
 
-  const MainTabs = () => (
-    <View style={styles.mainTabs}>
-      {[
-        ["opps", "Opportunities"],
-        ["unusual", "Unusual Options"],
-        ["universe", "Universe"],
-      ].map(([id, label]) => (
-        <TouchableOpacity
-          key={id}
-          style={[styles.mainTab, activeMainTab === id && styles.mainTabActive]}
-          onPress={() => setActiveMainTab(id)}
-        >
-          <Text style={[styles.mainTabText, activeMainTab === id && styles.mainTabTextActive]}>{label}</Text>
-        </TouchableOpacity>
-      ))}
-      <TouchableOpacity style={styles.mainTabRight} onPress={() => setSettingsOpen(true)}>
-        <Text style={styles.mainTabText}>⚙️</Text>
+  // ---------------------------
+  // ✅ NEW: Portfolio tab UI
+  // ---------------------------
+  const portfolioTotals = useMemo(() => {
+    let pnl = 0;
+    let countWithPnl = 0;
+    paperPortfolio.forEach((t) => {
+      if (toNum(t.pnl) != null) {
+        pnl += Number(t.pnl);
+        countWithPnl++;
+      }
+    });
+    return { pnl, countWithPnl };
+  }, [paperPortfolio]);
+
+// [Previous code remains the same until the renderPortfolioTab function...]
+
+const renderPortfolioTab = () => (
+  <View style={{ flex: 1 }}>
+    <View style={styles.header}>
+      <Text style={styles.title}>📒 Paper Portfolio</Text>
+      <Text style={styles.subtitle}>
+        P&L updates only when you press "Get Current Prices" (Tradier quotes). {portfolioLastUpdated ? `Last: ${new Date(portfolioLastUpdated).toLocaleString()}` : ""}
+      </Text>
+    </View>
+
+    <View style={styles.topButtonsRow}>
+      <TouchableOpacity style={styles.smallButton} onPress={() => setSettingsOpen(true)}>
+        <Text style={styles.smallButtonText}>⚙️ Settings</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.smallButton, { backgroundColor: "#111827" }]}
+        onPress={updatePortfolioPrices}
+        disabled={portfolioLoadingPrices}
+      >
+        <Text style={styles.smallButtonText}>{portfolioLoadingPrices ? "..." : "💸 Get Current Prices"}</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.smallButton, { backgroundColor: "#7c2d12" }]}
+        onPress={() => {
+          Alert.alert("Clear portfolio?", "This removes all paper trades.", [
+            { text: "Cancel", style: "cancel" },
+            { text: "Clear", style: "destructive", onPress: () => setPaperPortfolio([]) },
+          ]);
+        }}
+      >
+        <Text style={styles.smallButtonText}>🗑️ Clear</Text>
       </TouchableOpacity>
     </View>
-  );
 
-  return (
-    <View style={styles.container}>
-      <MainTabs />
-      {activeMainTab === "opps" ? renderOppsTab() : activeMainTab === "unusual" ? renderUnusualTab() : renderUniverseTab()}
+    {portfolioError ? <Text style={[styles.errorText, { marginHorizontal: 12 }]}>{portfolioError}</Text> : null}
 
-      {renderSelectedModal()}
-      {renderUnusualModal()}
-      {renderOpportunityModal()}
-      {renderScanningOverlay()}
-      {renderSettingsModal()}
+    <View style={styles.panel}>
+      <Text style={styles.panelTitle}>Summary</Text>
+      <Text style={styles.panelSub}>
+        Trades: {paperPortfolio.length} • With P&L: {portfolioTotals.countWithPnl} • Total P&L:{" "}
+        <Text style={{ color: portfolioTotals.pnl >= 0 ? "#10B981" : "#EF4444", fontWeight: "900" }}>
+          {portfolioTotals.countWithPnl ? `$${portfolioTotals.pnl.toFixed(2)}` : "—"}
+        </Text>
+      </Text>
     </View>
-  );
-  
+
+    <ScrollView style={{ flex: 1, paddingHorizontal: 12 }}>
+      {paperPortfolio.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyStateIcon}>🧾</Text>
+          <Text style={styles.emptyStateTitle}>No paper trades yet</Text>
+          <Text style={styles.emptyStateText}>Add from an Opportunity or from an Unusual Options contract.</Text>
+        </View>
+      ) : (
+        paperPortfolio.map((t) => {
+          const dte = yyyyMmDdToDte(t.expiration);
+          const cur = toNum(t.currentValue);
+          const entry = toNum(t.entryValue);
+          const pnl = toNum(t.pnl);
+          const pnlPct = toNum(t.pnlPct);
+
+          return (
+            <View key={t.id} style={styles.portCard}>
+              <View style={styles.portHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.portTitle}>
+                    {t.underlying} • {t.strategy}
+                  </Text>
+                  <Text style={styles.portSub}>
+                    Exp {t.expiration} • DTE {dte ?? "—"} • Qty {t.qty} • Source: {t.source}
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => removePaperTrade(t.id)} style={styles.portRemoveBtn}>
+                  <Text style={styles.portRemoveText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.portDetailsRow}>
+                <View style={styles.portDetailCol}>
+                  <Text style={styles.portDetailLabel}>Entry</Text>
+                  <Text style={styles.portDetailValue}>{t.entryLabel || `$${fmt2(entry)}`}</Text>
+                </View>
+                <View style={styles.portDetailCol}>
+                  <Text style={styles.portDetailLabel}>Current</Text>
+                  <Text style={styles.portDetailValue}>{cur != null ? `$${fmt2(cur)}` : "—"}</Text>
+                </View>
+                <View style={styles.portDetailCol}>
+                  <Text style={styles.portDetailLabel}>P&L</Text>
+                  <Text style={[styles.portDetailValue, { color: (pnl || 0) >= 0 ? "#10B981" : "#EF4444" }]}>
+                    {pnl != null ? `$${fmt2(pnl)}` : "—"}
+                  </Text>
+                </View>
+                <View style={styles.portDetailCol}>
+                  <Text style={styles.portDetailLabel}>%</Text>
+                  <Text style={[styles.portDetailValue, { color: (pnlPct || 0) >= 0 ? "#10B981" : "#EF4444" }]}>
+                    {pnlPct != null ? `${fmt2(pnlPct)}%` : "—"}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Legs */}
+              <View style={styles.portLegs}>
+                <Text style={styles.portLegsTitle}>Legs:</Text>
+                {(t.legs || []).map((leg, idx) => (
+                  <View key={idx} style={styles.portLeg}>
+                    <Text style={styles.portLegText}>
+                      {leg.action} {leg.optionType?.toUpperCase()} ${leg.strike}
+                    </Text>
+                    <Text style={styles.portLegSub}>
+                      {leg.symbol ? leg.symbol : "No symbol"}
+                      {leg.lastMid != null ? ` • Mid: $${fmt2(leg.lastMid)}` : ""}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+
+              {/* Notes */}
+              <TouchableOpacity
+                onPress={() => {
+                  Alert.prompt(
+                    "Edit Notes",
+                    "Add notes about this trade:",
+                    [
+                      { text: "Cancel", style: "cancel" },
+                      {
+                        text: "Save",
+                        onPress: (text) => updatePaperTradeNotes(t.id, { userNotes: text || "" }),
+                      },
+                    ],
+                    "plain-text",
+                    t.userNotes || ""
+                  );
+                }}
+                style={styles.portNotes}
+              >
+                <Text style={styles.portNotesLabel}>📝 Notes: {t.userNotes || "Tap to add notes"}</Text>
+              </TouchableOpacity>
+
+              {t.whySpotted ? (
+                <Text style={styles.portWhy}>💡 {t.whySpotted.substring(0, 80)}...</Text>
+              ) : null}
+
+              <Text style={styles.portMeta}>
+                Added {new Date(t.createdAt).toLocaleDateString()} • Last updated {new Date(t.updatedAt).toLocaleDateString()}
+              </Text>
+            </View>
+          );
+        })
+      )}
+    </ScrollView>
+  </View>
+);
+
+const MainTabs = () => (
+  <View style={styles.mainTabs}>
+    {[
+      ["opps", "Opportunities"],
+      ["unusual", "Unusual Options"],
+      ["universe", "Universe"],
+      ["portfolio", "Portfolio"],
+    ].map(([id, label]) => (
+      <TouchableOpacity
+        key={id}
+        style={[styles.mainTab, activeMainTab === id && styles.mainTabActive]}
+        onPress={() => setActiveMainTab(id)}
+      >
+        <Text style={[styles.mainTabText, activeMainTab === id && styles.mainTabTextActive]}>{label}</Text>
+      </TouchableOpacity>
+    ))}
+    <TouchableOpacity style={styles.mainTabRight} onPress={() => setSettingsOpen(true)}>
+      <Text style={styles.mainTabText}>⚙️</Text>
+    </TouchableOpacity>
+  </View>
+);
+
+return (
+  <View style={styles.container}>
+    <MainTabs />
+    {activeMainTab === "opps"
+      ? renderOppsTab()
+      : activeMainTab === "unusual"
+      ? renderUnusualTab()
+      : activeMainTab === "universe"
+      ? renderUniverseTab()
+      : renderPortfolioTab()}
+
+    {renderSelectedModal()}
+    {renderUnusualModal()}
+    {renderOpportunityModal()}
+    {renderScanningOverlay()}
+    {renderSettingsModal()}
+  </View>
+);
 };
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f5f5f5" },
 
@@ -2623,8 +3032,6 @@ const styles = StyleSheet.create({
   metaKey: { color: "#6B7280", fontSize: 12, fontWeight: "800" },
   metaVal: { color: "#111827", fontSize: 18, fontWeight: "900", marginTop: 4 },
 
-  monoWrap: { marginTop: 8, fontSize: 12, color: "#111827", fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }) },
-
   unusualCard: { backgroundColor: "white", borderRadius: 14, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: "#eef2f7" },
   unusualHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   unusualUnderlying: { fontSize: 16, fontWeight: "900", color: "#111827" },
@@ -2682,37 +3089,115 @@ const styles = StyleSheet.create({
   universeLink: { color: "#2563eb" },
   pos: { color: "#10B981" },
   neg: { color: "#EF4444" },
-  universeTableHeader: {
-    marginTop: 10,
-    flexDirection: "row",
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: "#f9fafb",
-    borderWidth: 1,
-    borderColor: "#eef2f7",
-  },
-  universeRow: {
-    marginTop: 8,
-    flexDirection: "row",
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-    borderRadius: 10,
+
+  // Portfolio styles
+  portCard: {
     backgroundColor: "white",
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: "#eef2f7",
-    alignItems: "center",
   },
-  universeCell: {
+  portHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: 12,
+  },
+  portTitle: {
+    fontSize: 16,
+    fontWeight: "900",
+    color: "#111827",
+    marginBottom: 4,
+  },
+  portSub: {
     fontSize: 12,
+    color: "#6B7280",
+    fontWeight: "700",
+  },
+  portRemoveBtn: {
+    padding: 6,
+    marginLeft: 10,
+  },
+  portRemoveText: {
+    fontSize: 16,
+    color: "#EF4444",
+    fontWeight: "900",
+  },
+  portDetailsRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 12,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f0f0f0",
+  },
+  portDetailCol: {
+    alignItems: "center",
+    flex: 1,
+  },
+  portDetailLabel: {
+    fontSize: 11,
+    color: "#666",
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  portDetailValue: {
+    fontSize: 14,
     fontWeight: "900",
     color: "#111827",
   },
-  universeCellSym: { flex: 1 },
-  universeCellNum: { width: 72, textAlign: "right" },
-  universeLink: { color: "#2563eb" },
-  pos: { color: "#10B981" },
-  neg: { color: "#EF4444" },    
+  portLegs: {
+    marginBottom: 12,
+  },
+  portLegsTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#374151",
+    marginBottom: 6,
+  },
+  portLeg: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: "#f9fafb",
+    borderRadius: 8,
+    marginBottom: 6,
+  },
+  portLegText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  portLegSub: {
+    fontSize: 11,
+    color: "#6B7280",
+    marginTop: 2,
+  },
+  portNotes: {
+    padding: 10,
+    backgroundColor: "#f0f9ff",
+    borderRadius: 8,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#dbeafe",
+  },
+  portNotesLabel: {
+    fontSize: 12,
+    color: "#1e40af",
+    fontWeight: "700",
+  },
+  portWhy: {
+    fontSize: 11,
+    color: "#6B7280",
+    fontStyle: "italic",
+    marginBottom: 8,
+  },
+  portMeta: {
+    fontSize: 10,
+    color: "#9ca3af",
+    fontWeight: "700",
+  },
 });
 
 export default SmartOpportunitiesAlpacaUniverse;
