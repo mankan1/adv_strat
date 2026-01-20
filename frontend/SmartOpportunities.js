@@ -11,7 +11,22 @@ import {
   TextInput,
   Platform,
   Linking, // ✅ add
+  Share,
 } from "react-native";
+
+// ✅ Clipboard (Expo OR RN). Pick one:
+let Clipboard = null;
+try {
+  // Expo
+  Clipboard = require("expo-clipboard");
+} catch (e) {
+  try {
+    // RN community
+    Clipboard = require("@react-native-clipboard/clipboard").default;
+  } catch (e2) {
+    Clipboard = null;
+  }
+}
 
 // OPTIONAL (remove if you don't want persistence)
 let AsyncStorage = null;
@@ -214,7 +229,243 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
   const [portfolioLoadingPrices, setPortfolioLoadingPrices] = useState(false);
   const [portfolioError, setPortfolioError] = useState("");
   const [portfolioLastUpdated, setPortfolioLastUpdated] = useState(null);
+  // ---------------------------
+  // ✅ NEW: Share Paper Trade to X / Stocktwits
+  // ---------------------------
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareTrade, setShareTrade] = useState(null);
 
+  const safeStr = (v) => (v == null ? "" : String(v));
+  const clampLen = (s, max) => {
+    const str = safeStr(s);
+    return str.length > max ? str.slice(0, max - 1) + "…" : str;
+  };
+
+  const formatLeg = (leg) => {
+    const side = leg?.action === "SELL" ? "SELL" : "BUY";
+    const type = (leg?.optionType || "").toUpperCase() || "OPT";
+    const strike = leg?.strike != null ? `$${leg.strike}` : "";
+    const exp = leg?.expiration ? ` ${leg.expiration}` : "";
+    return `${side} ${type} ${strike}${exp}`.trim();
+  };
+
+  const buildPaperTradePost = (t, { includeDisclaimer = true } = {}) => {
+    if (!t) return "";
+
+    const underlying = safeStr(t.underlying).toUpperCase();
+    const strat = safeStr(t.strategy);
+    const exp = safeStr(t.expiration);
+    const qty = t.qty || 1;
+
+    const entryValue = toNum(t.entryValue);
+    const currentValue = toNum(t.currentValue);
+    const pnl = toNum(t.pnl);
+    const pnlPct = toNum(t.pnlPct);
+
+    const legs = Array.isArray(t.legs) ? t.legs : [];
+    const legsLine =
+      legs.length > 0 ? legs.map(formatLeg).slice(0, 4).join(" | ") : "";
+
+    // Use cashtag conventions that both X + Stocktwits like
+    const cashtag = underlying ? `$${underlying}` : "";
+
+    // Keep it compact but informative
+    const lines = [];
+
+    lines.push(`🧾 PAPER TRADE IDEA: ${cashtag} — ${strat}`);
+    if (exp) lines.push(`Exp: ${exp} • Qty: ${qty}`);
+
+    if (entryValue != null) lines.push(`Entry (net): ${fmt2(entryValue)}`);
+    if (currentValue != null) lines.push(`Now (net): ${fmt2(currentValue)}`);
+    if (pnl != null) lines.push(`P&L: ${pnl >= 0 ? "+" : ""}$${fmt2(pnl)}${pnlPct != null ? ` (${fmt2(pnlPct)}%)` : ""}`);
+
+    if (legsLine) lines.push(`Legs: ${legsLine}`);
+
+    // Optional user notes (short)
+    if (t.userNotes) lines.push(`Notes: ${clampLen(t.userNotes, 160)}`);
+
+    if (includeDisclaimer) {
+      lines.push(`⚠️ Paper trade. Not financial advice.`);
+    }
+
+    // Join with newlines (looks great in both apps)
+    return lines.join("\n");
+  };
+
+  // --- platform actions ---
+  const openXComposer = async (text) => {
+    const msg = safeStr(text);
+
+    // Try app deep link first (some devices support it); fallback to web intent
+    const appUrl = `x://post?text=${encodeURIComponent(msg)}`;
+    const webUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(msg)}`;
+
+    try {
+      const can = await Linking.canOpenURL(appUrl);
+      if (can) return Linking.openURL(appUrl);
+    } catch {}
+    return Linking.openURL(webUrl);
+  };
+
+  const shareToSystemSheet = async (text) => {
+    const msg = safeStr(text);
+    try {
+      await Share.share({ message: msg });
+    } catch (e) {
+      Alert.alert("Share failed", String(e?.message || e));
+    }
+  };
+
+  const copyToClipboard = async (text) => {
+    const msg = safeStr(text);
+    if (!Clipboard) {
+      Alert.alert("Clipboard not available", "Install expo-clipboard or @react-native-clipboard/clipboard");
+      return;
+    }
+    try {
+      if (Clipboard?.setStringAsync) await Clipboard.setStringAsync(msg);
+      else if (Clipboard?.setString) Clipboard.setString(msg);
+      Alert.alert("Copied", "Paper trade text copied to clipboard.");
+    } catch (e) {
+      Alert.alert("Copy failed", String(e?.message || e));
+    }
+  };
+
+  // Stocktwits: best UX without API auth is the share sheet.
+  // If Stocktwits is installed, it shows as a target.
+  // We also attempt a deep link; if it fails, we just open the symbol page + share sheet.
+  const shareToStocktwits = async (trade, text) => {
+    const underlying = safeStr(trade?.underlying).toUpperCase();
+    const msg = safeStr(text);
+
+    // Deep link (not guaranteed across all devices/versions)
+    const deepLink = `stocktwits://`; // minimal: open app
+    const webSymbol = underlying ? `https://stocktwits.com/symbol/${encodeURIComponent(underlying)}` : `https://stocktwits.com`;
+
+    try {
+      const can = await Linking.canOpenURL(deepLink);
+      if (can) {
+        // Open app, then immediately open share sheet (user chooses Stocktwits)
+        await Linking.openURL(deepLink);
+        await sleep(250);
+        await shareToSystemSheet(msg);
+        return;
+      }
+    } catch {}
+
+    // Fallback: open symbol page in browser + share sheet for text
+    try {
+      await Linking.openURL(webSymbol);
+    } catch {}
+    await shareToSystemSheet(msg);
+  };
+
+  const openShareForTrade = (t) => {
+    setShareTrade(t);
+    setShareOpen(true);
+  };
+
+  const renderShareModal = () => {
+    if (!shareOpen || !shareTrade) return null;
+
+    const postText = buildPaperTradePost(shareTrade, { includeDisclaimer: true });
+
+    return (
+      <Modal
+        animationType="slide"
+        transparent
+        visible={shareOpen}
+        onRequestClose={() => {
+          setShareOpen(false);
+          setShareTrade(null);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1, paddingRight: 10 }}>
+                <Text style={styles.modalTitle}>📣 Share Paper Trade</Text>
+                <Text style={styles.modalSubtitle}>
+                  {shareTrade.underlying} • {shareTrade.strategy}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.modalCloseButton}
+                onPress={() => {
+                  setShareOpen(false);
+                  setShareTrade(null);
+                }}
+              >
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ padding: 16 }}>
+              <Text style={styles.modalSectionTitle}>Preview</Text>
+              <View style={{ padding: 12, borderRadius: 12, backgroundColor: "#F3F4F6" }}>
+                <Text style={{ fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace", fontSize: 12, fontWeight: "700", color: "#111827" }}>
+                  {postText}
+                </Text>
+              </View>
+
+              <View style={{ height: 14 }} />
+
+              <TouchableOpacity
+                style={[styles.modalButton, { backgroundColor: "#111827" }]}
+                onPress={async () => {
+                  await openXComposer(postText);
+                  setShareOpen(false);
+                  setShareTrade(null);
+                }}
+              >
+                <Text style={styles.modalButtonText}>𝕏 Post to X (prefill)</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalButton, { backgroundColor: "#16A34A" }]}
+                onPress={async () => {
+                  await shareToStocktwits(shareTrade, postText);
+                  setShareOpen(false);
+                  setShareTrade(null);
+                }}
+              >
+                <Text style={styles.modalButtonText}>💬 Post to Stocktwits (share sheet)</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalButton, { backgroundColor: "#2563EB" }]}
+                onPress={async () => {
+                  await shareToSystemSheet(postText);
+                }}
+              >
+                <Text style={styles.modalButtonText}>📲 Share (system)</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalButton, { backgroundColor: "#7C3AED" }]}
+                onPress={async () => {
+                  await copyToClipboard(postText);
+                }}
+              >
+                <Text style={styles.modalButtonText}>📋 Copy text</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalButton, styles.secondaryButton]}
+                onPress={() => {
+                  setShareOpen(false);
+                  setShareTrade(null);
+                }}
+              >
+                <Text style={styles.secondaryButtonText}>Close</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+  
   // ---------------------------
   // Persist settings (optional)
   // ---------------------------
@@ -2701,6 +2952,20 @@ const renderPortfolioTab = () => (
 
           return (
             <View key={t.id} style={styles.portCard}>
+              {/* <View style={styles.portHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.portTitle}>
+                    {t.underlying} • {t.strategy}
+                  </Text>
+                  <Text style={styles.portSub}>
+                    Exp {t.expiration} • DTE {dte ?? "—"} • Qty {t.qty} • Source: {t.source}
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => removePaperTrade(t.id)} style={styles.portRemoveBtn}>
+                  <Text style={styles.portRemoveText}>✕</Text>
+                </TouchableOpacity>
+              </View> */}
+
               <View style={styles.portHeader}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.portTitle}>
@@ -2710,6 +2975,11 @@ const renderPortfolioTab = () => (
                     Exp {t.expiration} • DTE {dte ?? "—"} • Qty {t.qty} • Source: {t.source}
                   </Text>
                 </View>
+
+                <TouchableOpacity onPress={() => openShareForTrade(t)} style={styles.portShareBtn}>
+                  <Text style={styles.portShareText}>📣</Text>
+                </TouchableOpacity>
+
                 <TouchableOpacity onPress={() => removePaperTrade(t.id)} style={styles.portRemoveBtn}>
                   <Text style={styles.portRemoveText}>✕</Text>
                 </TouchableOpacity>
@@ -2829,6 +3099,7 @@ return (
     {renderOpportunityModal()}
     {renderScanningOverlay()}
     {renderSettingsModal()}
+    {renderShareModal()} 
   </View>
 );
 };
@@ -3198,6 +3469,20 @@ const styles = StyleSheet.create({
     color: "#9ca3af",
     fontWeight: "700",
   },
+  portShareBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+  portShareText: {
+    color: "white",
+    fontWeight: "900",
+    fontSize: 14,
+  },  
 });
 
 export default SmartOpportunitiesAlpacaUniverse;
