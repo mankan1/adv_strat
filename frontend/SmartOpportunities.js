@@ -759,8 +759,8 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
   // ---------------------------
   const tradierFetchFundamentalsCompanies = async (symbolsCsv) => {
     const tryPaths = [
-      "/v1/markets/fundamentals/companies",
-      "/v1/markets/fundamentals/company",
+      "/beta/markets/fundamentals/companies",
+      "/beta/markets/fundamentals/company",
     ];
     let lastErr = null;
     for (const p of tryPaths) {
