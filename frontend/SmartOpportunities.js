@@ -141,6 +141,10 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
   const [companyMeta, setCompanyMeta] = useState({}); // { [SYM]: { name, sector } }
   const [companyMetaLoading, setCompanyMetaLoading] = useState(false);
   const [companyMetaError, setCompanyMetaError] = useState("");
+  
+  // ✅ Finnhub rate-limit circuit breaker
+  const [finnhubRateLimited, setFinnhubRateLimited] = useState(false);
+  const [finnhubRateLimitUntil, setFinnhubRateLimitUntil] = useState(null); 
 
   // ---------- Credentials / Settings ----------
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -586,27 +590,58 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     }
     return out;
   };
-
+  const tripFinnhubRateLimit = (cooldownMs = 60_000) => {
+    setFinnhubRateLimited(true);
+    setFinnhubRateLimitUntil(Date.now() + cooldownMs);
+  };
   // ---------------------------
   // ✅ Finnhub helpers (company name + "sector" label only)
   // ---------------------------
+  // const finnhubFetchJson = async (path, params = {}) => {
+  //   if (!finnhubToken) throw new Error("Missing Finnhub API token in Settings.");
+  //   const url = new URL(`${finnhubBase}${path}`);
+  //   Object.entries(params).forEach(([k, v]) => {
+  //     if (v === undefined || v === null || v === "") return;
+  //     url.searchParams.set(k, String(v));
+  //   });
+  //   url.searchParams.set("token", finnhubToken);
+
+  //   const res = await fetch(url.toString(), { method: "GET", headers: { Accept: "application/json" } });
+  //   if (!res.ok) {
+  //     const text = await res.text().catch(() => "");
+  //     throw new Error(`Finnhub error ${res.status}: ${text}`);
+  //   }
+  //   return res.json();
+  // };
   const finnhubFetchJson = async (path, params = {}) => {
     if (!finnhubToken) throw new Error("Missing Finnhub API token in Settings.");
+  
+    // ✅ If we're currently rate-limited, don't even try
+    if (finnhubRateLimited && finnhubRateLimitUntil && Date.now() < finnhubRateLimitUntil) {
+      const waitSec = Math.ceil((finnhubRateLimitUntil - Date.now()) / 1000);
+      const e = new Error(`Finnhub rate-limited (cooldown ${waitSec}s)`);
+      e.status = 429;
+      throw e;
+    }
+  
     const url = new URL(`${finnhubBase}${path}`);
     Object.entries(params).forEach(([k, v]) => {
       if (v === undefined || v === null || v === "") return;
       url.searchParams.set(k, String(v));
     });
     url.searchParams.set("token", finnhubToken);
-
+  
     const res = await fetch(url.toString(), { method: "GET", headers: { Accept: "application/json" } });
+  
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Finnhub error ${res.status}: ${text}`);
+      const err = new Error(`Finnhub error ${res.status}: ${text}`);
+      err.status = res.status;
+      throw err;
     }
+  
     return res.json();
   };
-
   // /stock/profile2?symbol=AAPL -> { name, finnhubIndustry, ... }
   const finnhubGetCompanyProfile = async (symbol) => {
     const sym = String(symbol || "").toUpperCase().trim();
@@ -629,61 +664,152 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     return /\b(429|500|502|503|504)\b/.test(msg);
   };
 
+  // const loadCompanyMetaForSymbols = async (symbols) => {
+  //   const syms = uniq(symbols)
+  //     .map((s) => String(s || "").toUpperCase().trim())
+  //     .filter(Boolean);
+
+  //   if (!syms.length) return;
+
+  //   const missing = syms.filter((s) => !companyMeta[s]);
+  //   if (!missing.length) return;
+
+  //   setCompanyMetaLoading(true);
+  //   setCompanyMetaError("");
+
+  //   try {
+  //     const out = {};
+  //     const concurrency = 6;
+  //     const baseDelayMs = 120;
+
+  //     const rows = await withConcurrency(missing, concurrency, async (sym) => {
+  //       // basic retry loop
+  //       let lastErr = null;
+  //       for (let attempt = 0; attempt < 4; attempt++) {
+  //         try {
+  //           const prof = await finnhubGetCompanyProfile(sym);
+  //           await sleep(baseDelayMs);
+  //           return prof;
+  //         } catch (e) {
+  //           lastErr = e;
+  //           if (!isRetryable(e) || attempt === 3) break;
+  //           const backoff = Math.min(2000, 200 * Math.pow(2, attempt));
+  //           await sleep(backoff + Math.floor(Math.random() * 100));
+  //         }
+  //       }
+  //       // swallow error per symbol; store nothing
+  //       return { symbol: sym, name: null, sector: null, _error: String(lastErr?.message || lastErr) };
+  //     });
+
+  //     rows
+  //       .filter(Boolean)
+  //       .forEach((r) => {
+  //         if (!r?.symbol) return;
+  //         out[r.symbol] = {
+  //           name: r.name || null,
+  //           sector: r.sector || null,
+  //         };
+  //       });
+
+  //     if (Object.keys(out).length) setCompanyMeta((prev) => ({ ...prev, ...out }));
+  //   } catch (e) {
+  //     setCompanyMetaError(String(e?.message || e));
+  //   } finally {
+  //     setCompanyMetaLoading(false);
+  //   }
+  // };
   const loadCompanyMetaForSymbols = async (symbols) => {
     const syms = uniq(symbols)
       .map((s) => String(s || "").toUpperCase().trim())
       .filter(Boolean);
-
+  
     if (!syms.length) return;
-
+  
+    // ✅ Only fetch missing
     const missing = syms.filter((s) => !companyMeta[s]);
     if (!missing.length) return;
-
+  
+    // ✅ If rate-limited, immediately populate placeholders and bail
+    if (finnhubRateLimited && finnhubRateLimitUntil && Date.now() < finnhubRateLimitUntil) {
+      const placeholders = {};
+      missing.forEach((sym) => {
+        placeholders[sym] = { name: null, sector: null };
+      });
+      setCompanyMeta((prev) => ({ ...prev, ...placeholders }));
+      return;
+    }
+  
     setCompanyMetaLoading(true);
     setCompanyMetaError("");
-
+  
+    // ✅ shared abort flag for concurrency workers
+    let stop = false;
+  
     try {
       const out = {};
       const concurrency = 6;
       const baseDelayMs = 120;
-
+  
       const rows = await withConcurrency(missing, concurrency, async (sym) => {
-        // basic retry loop
+        // If another worker tripped rate-limit, don't keep calling Finnhub
+        if (stop) return { symbol: sym, name: null, sector: null, _skipped: true };
+  
         let lastErr = null;
+  
         for (let attempt = 0; attempt < 4; attempt++) {
           try {
             const prof = await finnhubGetCompanyProfile(sym);
             await sleep(baseDelayMs);
-            return prof;
+            return prof || { symbol: sym, name: null, sector: null };
           } catch (e) {
             lastErr = e;
+  
+            // ✅ If 429, trip breaker + stop all further workers
+            const status = e?.status;
+            const msg = String(e?.message || e || "");
+            const is429 = status === 429 || /\b429\b/.test(msg) || isRateLimitError(msg);
+  
+            if (is429) {
+              stop = true;
+              tripFinnhubRateLimit(60_000); // 1 min cooldown (tune this)
+              return { symbol: sym, name: null, sector: null, _error: "rate-limited" };
+            }
+  
+            // retry only on retryables
             if (!isRetryable(e) || attempt === 3) break;
+  
             const backoff = Math.min(2000, 200 * Math.pow(2, attempt));
             await sleep(backoff + Math.floor(Math.random() * 100));
           }
         }
-        // swallow error per symbol; store nothing
+  
         return { symbol: sym, name: null, sector: null, _error: String(lastErr?.message || lastErr) };
       });
-
-      rows
-        .filter(Boolean)
-        .forEach((r) => {
-          if (!r?.symbol) return;
-          out[r.symbol] = {
-            name: r.name || null,
-            sector: r.sector || null,
-          };
-        });
-
+  
+      // ✅ Merge results; keep placeholders for missing so UI can still render
+      rows.filter(Boolean).forEach((r) => {
+        if (!r?.symbol) return;
+        out[r.symbol] = { name: r.name || null, sector: r.sector || null };
+      });
+  
+      // ✅ Ensure every missing symbol has an entry (even if null)
+      missing.forEach((sym) => {
+        if (!out[sym]) out[sym] = { name: null, sector: null };
+      });
+  
       if (Object.keys(out).length) setCompanyMeta((prev) => ({ ...prev, ...out }));
+  
+      // ✅ Set a friendly error message only when rate-limited
+      if (stop) {
+        const waitSec = finnhubRateLimitUntil ? Math.ceil((finnhubRateLimitUntil - Date.now()) / 1000) : 60;
+        setCompanyMetaError(`Finnhub rate-limited — showing partial Company/Sector labels. Retry in ~${waitSec}s.`);
+      }
     } catch (e) {
       setCompanyMetaError(String(e?.message || e));
     } finally {
       setCompanyMetaLoading(false);
     }
   };
-
   // ---------------------------
   // Universe builder (Alpaca)
   // ---------------------------
