@@ -199,70 +199,70 @@ const normalizeTradierQuotes = (json) => {
   // ---------------------------
   // ✅ NEW: Load company name/sector for symbols (Tradier Fundamentals)
   // ---------------------------
-  const tradierFetchFundamentalsCompanies = async (symbolsCsv) => {
-    // Try a couple of plausible endpoints; Tradier docs differ by plan/version.
-    // We'll attempt and fall back.
-    const tryPaths = [
-      "/v1/markets/fundamentals/companies",
-      "/v1/markets/fundamentals/company",
-    ];
+  // const tradierFetchFundamentalsCompanies = async (symbolsCsv) => {
+  //   // Try a couple of plausible endpoints; Tradier docs differ by plan/version.
+  //   // We'll attempt and fall back.
+  //   const tryPaths = [
+  //     "/v1/markets/fundamentals/companies",
+  //     "/v1/markets/fundamentals/company",
+  //   ];
 
-    let lastErr = null;
-    for (const p of tryPaths) {
-      try {
-        // Most Tradier fundamentals endpoints use `symbols=`
-        const json = await tradierFetchJson(p, { symbols: symbolsCsv });
-        return json;
-      } catch (e) {
-        lastErr = e;
-      }
-    }
-    throw lastErr || new Error("Failed to load fundamentals");
-  };
+  //   let lastErr = null;
+  //   for (const p of tryPaths) {
+  //     try {
+  //       // Most Tradier fundamentals endpoints use `symbols=`
+  //       const json = await tradierFetchJson(p, { symbols: symbolsCsv });
+  //       return json;
+  //     } catch (e) {
+  //       lastErr = e;
+  //     }
+  //   }
+  //   throw lastErr || new Error("Failed to load fundamentals");
+  // };
 
-  const loadCompanyMetaForSymbols = async (symbols) => {
-    const syms = uniq(symbols).map((s) => String(s || "").toUpperCase()).filter(Boolean);
-    if (!syms.length) return;
+  // const loadCompanyMetaForSymbols = async (symbols) => {
+  //   const syms = uniq(symbols).map((s) => String(s || "").toUpperCase()).filter(Boolean);
+  //   if (!syms.length) return;
 
-    // Only fetch missing
-    const missing = syms.filter((s) => !companyMeta[s]);
-    if (!missing.length) return;
+  //   // Only fetch missing
+  //   const missing = syms.filter((s) => !companyMeta[s]);
+  //   if (!missing.length) return;
 
-    setCompanyMetaLoading(true);
-    setCompanyMetaError("");
+  //   setCompanyMetaLoading(true);
+  //   setCompanyMetaError("");
 
-    try {
-      const out = {};
-      // Tradier fundamentals is usually fine in chunks (avoid huge URLs)
-      const batchSize = 50;
+  //   try {
+  //     const out = {};
+  //     // Tradier fundamentals is usually fine in chunks (avoid huge URLs)
+  //     const batchSize = 50;
 
-      for (let i = 0; i < missing.length; i += batchSize) {
-        const batch = missing.slice(i, i + batchSize);
-        const json = await tradierFetchFundamentalsCompanies(batch.join(","));
-        const rows = normalizeTradierCompanies(json);
+  //     for (let i = 0; i < missing.length; i += batchSize) {
+  //       const batch = missing.slice(i, i + batchSize);
+  //       const json = await tradierFetchFundamentalsCompanies(batch.join(","));
+  //       const rows = normalizeTradierCompanies(json);
 
-        rows.forEach((r) => {
-          const best = pickBestCompanyRow(r);
-          if (!best?.symbol) return;
-          out[best.symbol] = {
-            name: best.name || null,
-            sector: best.sector || null,
-            industry: best.industry || null,
-          };
-        });
+  //       rows.forEach((r) => {
+  //         const best = pickBestCompanyRow(r);
+  //         if (!best?.symbol) return;
+  //         out[best.symbol] = {
+  //           name: best.name || null,
+  //           sector: best.sector || null,
+  //           industry: best.industry || null,
+  //         };
+  //       });
 
-        await sleep(120);
-      }
+  //       await sleep(120);
+  //     }
 
-      if (Object.keys(out).length) {
-        setCompanyMeta((prev) => ({ ...prev, ...out }));
-      }
-    } catch (e) {
-      setCompanyMetaError(String(e?.message || e));
-    } finally {
-      setCompanyMetaLoading(false);
-    }
-  };
+  //     if (Object.keys(out).length) {
+  //       setCompanyMeta((prev) => ({ ...prev, ...out }));
+  //     }
+  //   } catch (e) {
+  //     setCompanyMetaError(String(e?.message || e));
+  //   } finally {
+  //     setCompanyMetaLoading(false);
+  //   }
+  // };
 
 
 const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
@@ -752,6 +752,65 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
 
     const json = await res.json();
     return json;
+  };
+
+  // ---------------------------
+  // ✅ NOW SAFE: Load company name/sector for symbols (Tradier Fundamentals)
+  // ---------------------------
+  const tradierFetchFundamentalsCompanies = async (symbolsCsv) => {
+    const tryPaths = [
+      "/v1/markets/fundamentals/companies",
+      "/v1/markets/fundamentals/company",
+    ];
+    let lastErr = null;
+    for (const p of tryPaths) {
+      try {
+        const json = await tradierFetchJson(p, { symbols: symbolsCsv });
+        return json;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error("Failed to load fundamentals");
+  };
+
+  const loadCompanyMetaForSymbols = async (symbols) => {
+    const syms = uniq(symbols)
+      .map((s) => String(s || "").toUpperCase())
+      .filter(Boolean);
+    if (!syms.length) return;
+
+    const missing = syms.filter((s) => !companyMeta[s]);
+    if (!missing.length) return;
+
+    setCompanyMetaLoading(true);
+    setCompanyMetaError("");
+    try {
+      const out = {};
+      const batchSize = 50;
+      for (let i = 0; i < missing.length; i += batchSize) {
+        const batch = missing.slice(i, i + batchSize);
+        const json = await tradierFetchFundamentalsCompanies(batch.join(","));
+        const rows = normalizeTradierCompanies(json);
+        rows.forEach((r) => {
+          const best = pickBestCompanyRow(r);
+          if (!best?.symbol) return;
+          out[best.symbol] = {
+            name: best.name || null,
+            sector: best.sector || null,
+            industry: best.industry || null,
+          };
+        });
+        await sleep(120);
+      }
+      if (Object.keys(out).length) {
+        setCompanyMeta((prev) => ({ ...prev, ...out }));
+      }
+    } catch (e) {
+      setCompanyMetaError(String(e?.message || e));
+    } finally {
+      setCompanyMetaLoading(false);
+    }
   };
 
   // ---------------------------
