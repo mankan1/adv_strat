@@ -77,6 +77,58 @@ const clampTop = (n) => Math.max(1, Math.min(100, Number.isFinite(n) ? n : 50));
 const uniq = (arr) => Array.from(new Set(arr.filter(Boolean)));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// ---------------------------
+// ✅ NEW: Tradier fundamentals (company name + sector)
+// ---------------------------
+const normalizeTradierCompanies = (json) => {
+  // Tradier fundamentals shapes vary depending on endpoint.
+  // We'll support a few common shapes:
+  // 1) { fundamentals: { companies: { company: [...] } } }
+  // 2) { fundamentals: { company: [...] } }
+  // 3) { fundamentals: { company: { ... } } }
+
+  const c1 = json?.fundamentals?.companies?.company;
+  const c2 = json?.fundamentals?.company;
+
+  const arr =
+    Array.isArray(c1) ? c1 :
+    c1 ? [c1] :
+    Array.isArray(c2) ? c2 :
+    c2 ? [c2] :
+    [];
+
+  return arr
+    .map((c) => {
+      const symbol = (c?.symbol || c?.ticker || c?.company?.symbol || "").toUpperCase();
+      const name =
+        c?.name ||
+        c?.company_name ||
+        c?.company?.name ||
+        c?.company?.company_name ||
+        null;
+
+      const sector =
+        c?.sector ||
+        c?.company?.sector ||
+        c?.fundamentals?.sector ||
+        null;
+
+      const industry =
+        c?.industry ||
+        c?.company?.industry ||
+        null;
+
+      return symbol
+        ? { symbol, name: name || null, sector: sector || null, industry: industry || null }
+        : null;
+    })
+    .filter(Boolean);
+};
+
+const pickBestCompanyRow = (row) => {
+  // You can tweak preference ordering here if Tradier returns duplicates
+  return row;
+};
 
 async function withConcurrency(items, concurrency, worker) {
   const results = [];
@@ -144,8 +196,86 @@ const normalizeTradierQuotes = (json) => {
     })
     .filter((x) => x.symbol);
 };
+  // ---------------------------
+  // ✅ NEW: Load company name/sector for symbols (Tradier Fundamentals)
+  // ---------------------------
+  const tradierFetchFundamentalsCompanies = async (symbolsCsv) => {
+    // Try a couple of plausible endpoints; Tradier docs differ by plan/version.
+    // We'll attempt and fall back.
+    const tryPaths = [
+      "/v1/markets/fundamentals/companies",
+      "/v1/markets/fundamentals/company",
+    ];
+
+    let lastErr = null;
+    for (const p of tryPaths) {
+      try {
+        // Most Tradier fundamentals endpoints use `symbols=`
+        const json = await tradierFetchJson(p, { symbols: symbolsCsv });
+        return json;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error("Failed to load fundamentals");
+  };
+
+  const loadCompanyMetaForSymbols = async (symbols) => {
+    const syms = uniq(symbols).map((s) => String(s || "").toUpperCase()).filter(Boolean);
+    if (!syms.length) return;
+
+    // Only fetch missing
+    const missing = syms.filter((s) => !companyMeta[s]);
+    if (!missing.length) return;
+
+    setCompanyMetaLoading(true);
+    setCompanyMetaError("");
+
+    try {
+      const out = {};
+      // Tradier fundamentals is usually fine in chunks (avoid huge URLs)
+      const batchSize = 50;
+
+      for (let i = 0; i < missing.length; i += batchSize) {
+        const batch = missing.slice(i, i + batchSize);
+        const json = await tradierFetchFundamentalsCompanies(batch.join(","));
+        const rows = normalizeTradierCompanies(json);
+
+        rows.forEach((r) => {
+          const best = pickBestCompanyRow(r);
+          if (!best?.symbol) return;
+          out[best.symbol] = {
+            name: best.name || null,
+            sector: best.sector || null,
+            industry: best.industry || null,
+          };
+        });
+
+        await sleep(120);
+      }
+
+      if (Object.keys(out).length) {
+        setCompanyMeta((prev) => ({ ...prev, ...out }));
+      }
+    } catch (e) {
+      setCompanyMetaError(String(e?.message || e));
+    } finally {
+      setCompanyMetaLoading(false);
+    }
+  };
+
 
 const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
+  // ---------- Universe view + company metadata ----------
+  const [universeView, setUniverseView] = useState("merged"); 
+  // merged | mostActiveVolume | topTraded | gainers | losers | gapUps | gapDowns | trending
+
+  const [companyMeta, setCompanyMeta] = useState({}); 
+  // { [SYM]: { name, sector, industry } }
+
+  const [companyMetaLoading, setCompanyMetaLoading] = useState(false);
+  const [companyMetaError, setCompanyMetaError] = useState("");
+
   // ---------- Credentials / Settings ----------
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selectedUnusual, setSelectedUnusual] = useState(null);
@@ -181,7 +311,19 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
   const [universeLoading, setUniverseLoading] = useState(false);
   const [universeError, setUniverseError] = useState("");
 
+  // const [universeMeta, setUniverseMeta] = useState({
+  //   mostActiveVolume: [],
+  //   topTraded: [],
+  //   gainers: [],
+  //   losers: [],
+  //   gapUps: [],
+  //   gapDowns: [],
+  //   trending: [],
+  //   merged: [],
+  //   mergedRows: [], // ✅ { symbol, price, changePct, volume }
+  // });
   const [universeMeta, setUniverseMeta] = useState({
+    // symbols (kept)
     mostActiveVolume: [],
     topTraded: [],
     gainers: [],
@@ -190,7 +332,17 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     gapDowns: [],
     trending: [],
     merged: [],
-    mergedRows: [], // ✅ { symbol, price, changePct, volume }
+
+    // rows (NEW)
+    mostActiveVolumeRows: [],  // {symbol, volume, trades, price?, changePct?}
+    topTradedRows: [],         // {symbol, trades, volume, price?, changePct?}
+    gainersRows: [],           // {symbol, price, changePct, volume?}
+    losersRows: [],            // {symbol, price, changePct, volume?}
+    gapUpsRows: [],            // {symbol, gapPct, price, changePct, volume}
+    gapDownsRows: [],          // {symbol, gapPct, price, changePct, volume}
+    trendingRows: [],          // {symbol, trendScore, price, changePct, volume, gapPct?}
+
+    mergedRows: [],            // {symbol, price, changePct, volume}
   });
 
   // ---------- Opportunities scan state ----------
@@ -635,38 +787,85 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     try {
       const top = clampTop(universeTop);
 
-      // 1) Most active by volume
-      const mostActiveVolume = includeSources.mostActiveVolume
-        ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", {
-            by: "volume",
-            top,
-          })
-        : null;
+      const mostActiveVolumeRowsRaw =
+        (mostActiveVolume?.most_actives || mostActiveVolume?.mostActives || [])
+          .map((x) => ({
+            symbol: x.symbol,
+            volume: toNum(x.volume ?? x.v ?? x.day_volume ?? x.dayVolume) ?? 0,
+            trades: toNum(x.trades ?? x.trade_count ?? x.tradeCount) ?? null,
+            price: toNum(x.price ?? x.last ?? x.last_price ?? x.lastPrice) ?? null,
+            changePct: toNum(x.change_pct ?? x.changePercent ?? x.pct_change) ?? null,
+          }))
+          .filter((x) => x.symbol);
 
-      // 2) Most active by trades
-      const topTraded = includeSources.topTraded
-        ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", {
-            by: "trades",
-            top,
-          })
-        : null;
+      const topTradedRowsRaw =
+        (topTraded?.most_actives || topTraded?.mostActives || [])
+          .map((x) => ({
+            symbol: x.symbol,
+            trades: toNum(x.trades ?? x.trade_count ?? x.tradeCount) ?? 0,
+            volume: toNum(x.volume ?? x.v ?? x.day_volume ?? x.dayVolume) ?? null,
+            price: toNum(x.price ?? x.last ?? x.last_price ?? x.lastPrice) ?? null,
+            changePct: toNum(x.change_pct ?? x.changePercent ?? x.pct_change) ?? null,
+          }))
+          .filter((x) => x.symbol);
 
-      // 3) Movers (gainers/losers)
-      const movers =
-        includeSources.moversGainers || includeSources.moversLosers
-          ? await alpacaFetchJson("/v1beta1/screener/stocks/movers") // ✅ NO top param
-          : null;
+      const gainersRowsRaw =
+        (movers?.gainers || [])
+          .map((x) => ({
+            symbol: x.symbol,
+            price: toNum(x.price ?? x.last ?? x.last_price) ?? null,
+            changePct: toNum(x.change_pct ?? x.percent_change ?? x.changePercent ?? x.pct_change) ?? null,
+            volume: toNum(x.volume ?? x.v) ?? null,
+          }))
+          .filter((x) => x.symbol);
 
-      const mostActiveVolumeSyms = (mostActiveVolume?.most_actives || mostActiveVolume?.mostActives || [])
-        .map((x) => x.symbol)
-        .filter(Boolean);
+      const losersRowsRaw =
+        (movers?.losers || [])
+          .map((x) => ({
+            symbol: x.symbol,
+            price: toNum(x.price ?? x.last ?? x.last_price) ?? null,
+            changePct: toNum(x.change_pct ?? x.percent_change ?? x.changePercent ?? x.pct_change) ?? null,
+            volume: toNum(x.volume ?? x.v) ?? null,
+          }))
+          .filter((x) => x.symbol);
 
-      const topTradedSyms = (topTraded?.most_actives || topTraded?.mostActives || [])
-        .map((x) => x.symbol)
-        .filter(Boolean);
+      const mostActiveVolumeSyms = mostActiveVolumeRowsRaw.map((x) => x.symbol);
+      const topTradedSyms = topTradedRowsRaw.map((x) => x.symbol);
+      const gainersSyms = gainersRowsRaw.map((x) => x.symbol);
+      const losersSyms = losersRowsRaw.map((x) => x.symbol);
 
-      const gainersSyms = (movers?.gainers || []).map((x) => x.symbol).filter(Boolean);
-      const losersSyms = (movers?.losers || []).map((x) => x.symbol).filter(Boolean);
+      // // 1) Most active by volume
+      // const mostActiveVolume = includeSources.mostActiveVolume
+      //   ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", {
+      //       by: "volume",
+      //       top,
+      //     })
+      //   : null;
+
+      // // 2) Most active by trades
+      // const topTraded = includeSources.topTraded
+      //   ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", {
+      //       by: "trades",
+      //       top,
+      //     })
+      //   : null;
+
+      // // 3) Movers (gainers/losers)
+      // const movers =
+      //   includeSources.moversGainers || includeSources.moversLosers
+      //     ? await alpacaFetchJson("/v1beta1/screener/stocks/movers") // ✅ NO top param
+      //     : null;
+
+      // const mostActiveVolumeSyms = (mostActiveVolume?.most_actives || mostActiveVolume?.mostActives || [])
+      //   .map((x) => x.symbol)
+      //   .filter(Boolean);
+
+      // const topTradedSyms = (topTraded?.most_actives || topTraded?.mostActives || [])
+      //   .map((x) => x.symbol)
+      //   .filter(Boolean);
+
+      // const gainersSyms = (movers?.gainers || []).map((x) => x.symbol).filter(Boolean);
+      // const losersSyms = (movers?.losers || []).map((x) => x.symbol).filter(Boolean);
 
       // Merge base universe BEFORE snapshot-based gap/trending
       const baseUnion = uniq([
@@ -709,29 +908,120 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
         })
         .filter(Boolean);
 
-      const gapUps = gapStats
+      // const gapUps = gapStats
+      //   .slice()
+      //   .sort((a, b) => b.gapPct - a.gapPct)
+      //   .slice(0, top)
+      //   .map((x) => x.symbol);
+
+      // const gapDowns = gapStats
+      //   .slice()
+      //   .sort((a, b) => a.gapPct - b.gapPct)
+      //   .slice(0, top)
+      //   .map((x) => x.symbol);
+
+      // // Trending heuristic
+      // const trending = gapStats
+      //   .map((x) => {
+      //     const absMove = Math.abs(x.dayChangePct ?? 0);
+      //     const volScore = Math.log10((x.dayVol ?? 0) + 1);
+      //     const score = absMove * 1.2 + volScore * 3;
+      //     return { ...x, score };
+      //   })
+      //   .sort((a, b) => b.score - a.score)
+      //   .slice(0, top)
+      //   .map((x) => x.symbol);
+      const gapUpsRows = gapStats
         .slice()
         .sort((a, b) => b.gapPct - a.gapPct)
         .slice(0, top)
-        .map((x) => x.symbol);
+        .map((x) => {
+          const s = snapshotMap?.[x.symbol];
+          const daily = s?.dailyBar;
+          const prev = s?.prevDailyBar;
+          const last =
+            s?.latestTrade?.p ??
+            s?.latestQuote?.ap ??
+            daily?.c ??
+            daily?.o ??
+            null;
 
-      const gapDowns = gapStats
+          const vol = daily?.v ?? 0;
+          const prevClose = prev?.c ?? null;
+          const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
+
+          return {
+            symbol: x.symbol,
+            gapPct: x.gapPct,
+            price: last,
+            changePct,
+            volume: vol,
+          };
+        });
+
+      const gapDownsRows = gapStats
         .slice()
         .sort((a, b) => a.gapPct - b.gapPct)
         .slice(0, top)
-        .map((x) => x.symbol);
+        .map((x) => {
+          const s = snapshotMap?.[x.symbol];
+          const daily = s?.dailyBar;
+          const prev = s?.prevDailyBar;
+          const last =
+            s?.latestTrade?.p ??
+            s?.latestQuote?.ap ??
+            daily?.c ??
+            daily?.o ??
+            null;
 
-      // Trending heuristic
-      const trending = gapStats
+          const vol = daily?.v ?? 0;
+          const prevClose = prev?.c ?? null;
+          const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
+
+          return {
+            symbol: x.symbol,
+            gapPct: x.gapPct,
+            price: last,
+            changePct,
+            volume: vol,
+          };
+        });
+
+      const trendingRows = gapStats
         .map((x) => {
           const absMove = Math.abs(x.dayChangePct ?? 0);
           const volScore = Math.log10((x.dayVol ?? 0) + 1);
-          const score = absMove * 1.2 + volScore * 3;
-          return { ...x, score };
+          const trendScore = absMove * 1.2 + volScore * 3;
+
+          const s = snapshotMap?.[x.symbol];
+          const daily = s?.dailyBar;
+          const prev = s?.prevDailyBar;
+          const last =
+            s?.latestTrade?.p ??
+            s?.latestQuote?.ap ??
+            daily?.c ??
+            daily?.o ??
+            null;
+
+          const vol = daily?.v ?? 0;
+          const prevClose = prev?.c ?? null;
+          const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
+
+          return {
+            symbol: x.symbol,
+            trendScore,
+            gapPct: x.gapPct,
+            price: last,
+            changePct,
+            volume: vol,
+          };
         })
-        .sort((a, b) => b.score - a.score)
-        .slice(0, top)
-        .map((x) => x.symbol);
+        .sort((a, b) => b.trendScore - a.trendScore)
+        .slice(0, top);
+
+      const gapUps = gapUpsRows.map((x) => x.symbol);
+      const gapDowns = gapDownsRows.map((x) => x.symbol);
+      const trending = trendingRows.map((x) => x.symbol);        
 
       // Final merged list based on toggles
       const merged = uniq([
@@ -779,8 +1069,51 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
         gapDowns,
         trending,
         merged,
-        mergedRows, // ✅
-      });
+      //   mergedRows, // ✅
+      // });
+        mostActiveVolumeRows: mostActiveVolumeRowsRaw
+        .slice()
+        .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))
+        .slice(0, top),
+
+        topTradedRows: topTradedRowsRaw
+        .slice()
+        .sort((a, b) => (b.trades ?? 0) - (a.trades ?? 0))
+        .slice(0, top),
+
+        gainersRows: gainersRowsRaw
+        .slice()
+        .sort((a, b) => (b.changePct ?? -9999) - (a.changePct ?? -9999))
+        .slice(0, top),
+
+        losersRows: losersRowsRaw
+        .slice()
+        .sort((a, b) => (a.changePct ?? 9999) - (b.changePct ?? 9999))
+        .slice(0, top),
+
+        gapUpsRows,
+        gapDownsRows,
+        trendingRows,
+
+        mergedRows: mergedRows
+          .slice()
+          .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0)),
+      });      
+
+      // ✅ NEW: load company metadata for merged + the per-view lists
+      const companySymbols = uniq([
+        ...merged,
+        ...mostActiveVolumeSyms,
+        ...topTradedSyms,
+        ...gainersSyms,
+        ...losersSyms,
+        ...gapUps,
+        ...gapDowns,
+        ...trending,
+      ]).slice(0, 250); // safety cap
+
+      await loadCompanyMetaForSymbols(companySymbols);
+
     } catch (e) {
       setUniverseError(String(e?.message || e));
     } finally {
@@ -2603,68 +2936,248 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     </Modal>
   );
 
-  const renderUniverseTab = () => (
-    <ScrollView style={{ flex: 1 }}>
-      <View style={styles.panel}>
-        <Text style={styles.panelTitle}>Universe</Text>
-        <Text style={styles.panelSub}>
-          Pulled from Alpaca: most-actives (volume), most-actives (trades), movers; then snapshots derive gaps + trending.
-        </Text>
+  const getUniverseViewRows = () => {
+    switch (universeView) {
+      case "mostActiveVolume":
+        return universeMeta.mostActiveVolumeRows || [];
+      case "topTraded":
+        return universeMeta.topTradedRows || [];
+      case "gainers":
+        return universeMeta.gainersRows || [];
+      case "losers":
+        return universeMeta.losersRows || [];
+      case "gapUps":
+        return universeMeta.gapUpsRows || [];
+      case "gapDowns":
+        return universeMeta.gapDownsRows || [];
+      case "trending":
+        return universeMeta.trendingRows || [];
+      case "merged":
+      default:
+        return universeMeta.mergedRows || [];
+    }
+  };
 
-        <TouchableOpacity style={styles.primaryButton} onPress={loadUniverseFromAlpaca} disabled={universeLoading}>
-          {universeLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Load Universe from Alpaca</Text>}
-        </TouchableOpacity>
+  const getCompanyLabel = (sym) => {
+    const m = companyMeta?.[String(sym || "").toUpperCase()];
+    return {
+      name: m?.name || "—",
+      sector: m?.sector || "—",
+    };
+  };
 
-        {universeError ? <Text style={styles.errorText}>{universeError}</Text> : null}
+  // const renderUniverseTab = () => (
+  //   <ScrollView style={{ flex: 1 }}>
+  //     <View style={styles.panel}>
+  //       <Text style={styles.panelTitle}>Universe</Text>
+  //       <Text style={styles.panelSub}>
+  //         Pulled from Alpaca: most-actives (volume), most-actives (trades), movers; then snapshots derive gaps + trending.
+  //       </Text>
 
-        <View style={styles.metaGrid}>
-          {[
-            ["mostActiveVolume", universeMeta.mostActiveVolume.length],
-            ["topTraded", universeMeta.topTraded.length],
-            ["gainers", universeMeta.gainers.length],
-            ["losers", universeMeta.losers.length],
-            ["gapUps", universeMeta.gapUps.length],
-            ["gapDowns", universeMeta.gapDowns.length],
-            ["trending", universeMeta.trending.length],
-            ["merged", universeMeta.merged.length],
-          ].map(([k, n]) => (
-            <View key={k} style={styles.metaCell}>
-              <Text style={styles.metaKey}>{k}</Text>
-              <Text style={styles.metaVal}>{n}</Text>
-            </View>
-          ))}
-        </View>
-        <Text style={[styles.panelTitle, { marginTop: 10, fontSize: 16 }]}>Merged symbols ({universeMeta.mergedRows?.length || 0})</Text>
+  //       <TouchableOpacity style={styles.primaryButton} onPress={loadUniverseFromAlpaca} disabled={universeLoading}>
+  //         {universeLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Load Universe from Alpaca</Text>}
+  //       </TouchableOpacity>
 
-        <View style={styles.universeTableHeader}>
-          <Text style={[styles.universeCell, styles.universeCellSym]}>Symbol</Text>
-          <Text style={[styles.universeCell, styles.universeCellNum]}>Price</Text>
-          <Text style={[styles.universeCell, styles.universeCellNum]}>Chg%</Text>
-          <Text style={[styles.universeCell, styles.universeCellNum]}>Vol</Text>
-        </View>
+  //       {universeError ? <Text style={styles.errorText}>{universeError}</Text> : null}
 
-        {(universeMeta.mergedRows || []).slice(0, 100).map((r) => {
-          const priceText = r.price == null ? "—" : Number(r.price).toFixed(2);
-          const chgText = r.changePct == null ? "—" : `${r.changePct.toFixed(2)}%`;
-          const volText = r.volume == null ? "—" : String(r.volume);
+  //       <View style={styles.metaGrid}>
+  //         {[
+  //           ["mostActiveVolume", universeMeta.mostActiveVolume.length],
+  //           ["topTraded", universeMeta.topTraded.length],
+  //           ["gainers", universeMeta.gainers.length],
+  //           ["losers", universeMeta.losers.length],
+  //           ["gapUps", universeMeta.gapUps.length],
+  //           ["gapDowns", universeMeta.gapDowns.length],
+  //           ["trending", universeMeta.trending.length],
+  //           ["merged", universeMeta.merged.length],
+  //         ].map(([k, n]) => (
+  //           <View key={k} style={styles.metaCell}>
+  //             <Text style={styles.metaKey}>{k}</Text>
+  //             <Text style={styles.metaVal}>{n}</Text>
+  //           </View>
+  //         ))}
+  //       </View>
+  //       <Text style={[styles.panelTitle, { marginTop: 10, fontSize: 16 }]}>Merged symbols ({universeMeta.mergedRows?.length || 0})</Text>
 
-          const chgStyle = r.changePct == null ? null : r.changePct >= 0 ? styles.pos : styles.neg;
+  //       <View style={styles.universeTableHeader}>
+  //         <Text style={[styles.universeCell, styles.universeCellSym]}>Symbol</Text>
+  //         <Text style={[styles.universeCell, styles.universeCellNum]}>Price</Text>
+  //         <Text style={[styles.universeCell, styles.universeCellNum]}>Chg%</Text>
+  //         <Text style={[styles.universeCell, styles.universeCellNum]}>Vol</Text>
+  //       </View>
 
-          return (
-            <TouchableOpacity key={r.symbol} style={styles.universeRow} onPress={() => openYahoo(r.symbol)} activeOpacity={0.85}>
-              <Text style={[styles.universeCell, styles.universeCellSym, styles.universeLink]}>{r.symbol}</Text>
-              <Text style={[styles.universeCell, styles.universeCellNum]}>{priceText}</Text>
-              <Text style={[styles.universeCell, styles.universeCellNum, chgStyle]}>{chgText}</Text>
-              <Text style={[styles.universeCell, styles.universeCellNum]}>{volText}</Text>
+  //       {(universeMeta.mergedRows || []).slice(0, 100).map((r) => {
+  //         const priceText = r.price == null ? "—" : Number(r.price).toFixed(2);
+  //         const chgText = r.changePct == null ? "—" : `${r.changePct.toFixed(2)}%`;
+  //         const volText = r.volume == null ? "—" : String(r.volume);
+
+  //         const chgStyle = r.changePct == null ? null : r.changePct >= 0 ? styles.pos : styles.neg;
+
+  //         return (
+  //           <TouchableOpacity key={r.symbol} style={styles.universeRow} onPress={() => openYahoo(r.symbol)} activeOpacity={0.85}>
+  //             <Text style={[styles.universeCell, styles.universeCellSym, styles.universeLink]}>{r.symbol}</Text>
+  //             <Text style={[styles.universeCell, styles.universeCellNum]}>{priceText}</Text>
+  //             <Text style={[styles.universeCell, styles.universeCellNum, chgStyle]}>{chgText}</Text>
+  //             <Text style={[styles.universeCell, styles.universeCellNum]}>{volText}</Text>
+  //           </TouchableOpacity>
+  //         );
+  //       })}
+
+  //       <Text style={styles.smallNote}>Tip: Tap a row to open Yahoo Finance for that symbol.</Text>
+  //     </View>
+  //   </ScrollView>
+  // );
+  const renderUniverseTab = () => {
+    const rows = getUniverseViewRows().slice(0, 100);
+
+    const viewButtons = [
+      ["merged", "Merged"],
+      ["mostActiveVolume", "Most Active (Vol)"],
+      ["topTraded", "Most Active (Trades)"],
+      ["gainers", "Movers (Gainers)"],
+      ["losers", "Movers (Losers)"],
+      ["gapUps", "Gap Ups"],
+      ["gapDowns", "Gap Downs"],
+      ["trending", "Trending"],
+    ];
+
+    return (
+      <ScrollView style={{ flex: 1 }}>
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Universe</Text>
+          <Text style={styles.panelSub}>
+            Pulled from Alpaca: most-actives (volume), most-actives (trades), movers; snapshots derive gaps + trending.
+          </Text>
+
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
+            <TouchableOpacity style={styles.primaryButton} onPress={loadUniverseFromAlpaca} disabled={universeLoading}>
+              {universeLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Load Universe from Alpaca</Text>}
             </TouchableOpacity>
-          );
-        })}
 
-        <Text style={styles.smallNote}>Tip: Tap a row to open Yahoo Finance for that symbol.</Text>
-      </View>
-    </ScrollView>
-  );
+            <TouchableOpacity
+              style={[styles.primaryButton, { backgroundColor: "#111827", flex: 0.8 }]}
+              onPress={() => loadCompanyMetaForSymbols((universeMeta.merged || []).slice(0, 200))}
+              disabled={companyMetaLoading}
+            >
+              {companyMetaLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Refresh Names/Sectors</Text>}
+            </TouchableOpacity>
+          </View>
 
+          {universeError ? <Text style={styles.errorText}>{universeError}</Text> : null}
+          {companyMetaError ? <Text style={styles.errorText}>{companyMetaError}</Text> : null}
+
+          <View style={styles.metaGrid}>
+            {[
+              ["mostActiveVolume", universeMeta.mostActiveVolume.length],
+              ["topTraded", universeMeta.topTraded.length],
+              ["gainers", universeMeta.gainers.length],
+              ["losers", universeMeta.losers.length],
+              ["gapUps", universeMeta.gapUps.length],
+              ["gapDowns", universeMeta.gapDowns.length],
+              ["trending", universeMeta.trending.length],
+              ["merged", universeMeta.merged.length],
+            ].map(([k, n]) => (
+              <View key={k} style={styles.metaCell}>
+                <Text style={styles.metaKey}>{k}</Text>
+                <Text style={styles.metaVal}>{n}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* ✅ NEW: View buttons */}
+          <Text style={[styles.panelTitle, { marginTop: 12, fontSize: 15 }]}>Views</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              {viewButtons.map(([id, label]) => (
+                <TouchableOpacity
+                  key={id}
+                  onPress={() => setUniverseView(id)}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    borderRadius: 999,
+                    backgroundColor: universeView === id ? "#111827" : "rgba(17,24,39,0.08)",
+                  }}
+                >
+                  <Text style={{ color: universeView === id ? "white" : "#111827", fontWeight: "900", fontSize: 12 }}>
+                    {label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </ScrollView>
+
+          <Text style={[styles.panelTitle, { marginTop: 12, fontSize: 16 }]}>
+            {viewButtons.find((x) => x[0] === universeView)?.[1] || "Merged"} ({rows.length})
+          </Text>
+
+          {/* ✅ NEW: Expanded table header */}
+          <View style={styles.universeTableHeader}>
+            <Text style={[styles.universeCell, styles.universeCellSym, { color: "white" }]}>Symbol</Text>
+            <Text style={[styles.universeCell, styles.universeCellSym, { color: "white" }]}>Company</Text>
+            <Text style={[styles.universeCell, styles.universeCellSym, { color: "white" }]}>Sector</Text>
+
+            <Text style={[styles.universeCell, styles.universeCellSym, { color: "white" }]}>Price</Text>
+            <Text style={[styles.universeCell, styles.universeCellSym, { color: "white" }]}>Chg%</Text>
+
+            {/* show a different last column depending on view */}
+            <Text style={[styles.universeCell, styles.universeCellNum]}>
+              {universeView === "mostActiveVolume" ? "Vol" :
+               universeView === "topTraded" ? "Trades" :
+               universeView === "gapUps" || universeView === "gapDowns" ? "Gap%" :
+               universeView === "trending" ? "Score" :
+               "Vol"}
+            </Text>
+          </View>
+
+          {rows.map((r) => {
+            const sym = r.symbol;
+            const { name, sector } = getCompanyLabel(sym);
+
+            const priceText = r.price == null ? "—" : Number(r.price).toFixed(2);
+            const chgText = r.changePct == null ? "—" : `${Number(r.changePct).toFixed(2)}%`;
+            const chgStyle = r.changePct == null ? null : Number(r.changePct) >= 0 ? styles.pos : styles.neg;
+
+            const lastCol =
+              universeView === "mostActiveVolume"
+                ? (r.volume == null ? "—" : String(Math.round(r.volume)))
+                : universeView === "topTraded"
+                ? (r.trades == null ? "—" : String(Math.round(r.trades)))
+                : universeView === "gapUps" || universeView === "gapDowns"
+                ? (r.gapPct == null ? "—" : `${Number(r.gapPct).toFixed(2)}%`)
+                : universeView === "trending"
+                ? (r.trendScore == null ? "—" : String(Number(r.trendScore).toFixed(1)))
+                : (r.volume == null ? "—" : String(Math.round(r.volume)));
+
+            return (
+              <TouchableOpacity
+                key={`${universeView}-${sym}`}
+                style={styles.universeRow}
+                onPress={() => openYahoo(sym)}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.universeCell, styles.universeCellSym, styles.universeLink]}>{sym}</Text>
+                <Text style={[styles.universeCell, { flex: 2.1 }]} numberOfLines={1}>
+                  {name}
+                </Text>
+                <Text style={[styles.universeCell, { flex: 1.4 }]} numberOfLines={1}>
+                  {sector}
+                </Text>
+
+                <Text style={[styles.universeCell, styles.universeCellNum]}>{priceText}</Text>
+                <Text style={[styles.universeCell, styles.universeCellNum, chgStyle]}>{chgText}</Text>
+                <Text style={[styles.universeCell, styles.universeCellNum]}>{lastCol}</Text>
+              </TouchableOpacity>
+            );
+          })}
+
+          <Text style={styles.smallNote}>
+            Tip: Tap a row to open Yahoo Finance. Views are independently sorted (volume, trades, movers %, gap %, trending score).
+          </Text>
+        </View>
+      </ScrollView>
+    );
+  };
   const renderUnusualTab = () => (
     <View style={{ flex: 1 }}>
       <View style={styles.panel}>
@@ -3335,14 +3848,16 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 10,
     borderRadius: 10,
-    backgroundColor: "#f9fafb",
+    // backgroundColor: "#f9fafb",
+    backgroundColor: "#111827",
     borderWidth: 1,
     borderColor: "#eef2f7",
   },
   universeRow: {
     marginTop: 8,
     flexDirection: "row",
-    paddingVertical: 12,
+    // paddingVertical: 12,
+    paddingVertical: 10,
     paddingHorizontal: 10,
     borderRadius: 10,
     backgroundColor: "white",
@@ -3350,14 +3865,22 @@ const styles = StyleSheet.create({
     borderColor: "#eef2f7",
     alignItems: "center",
   },
-  universeCell: {
-    fontSize: 12,
-    fontWeight: "900",
-    color: "#111827",
-  },
-  universeCellSym: { flex: 1 },
-  universeCellNum: { width: 72, textAlign: "right" },
-  universeLink: { color: "#2563eb" },
+  // universeCell: {
+  //   fontSize: 12,
+  //   fontWeight: "900",
+  //   color: "#111827",
+  // },
+  // universeCellSym: { flex: 1 },
+  // universeCellNum: { width: 72, textAlign: "right" },
+  // universeLink: { color: "#2563eb" },
+  universeCell: { color: "#111827", fontSize: 12, flex: 1 },
+  universeCellSym: { flex: 0.9, fontWeight: "900" },
+  universeCellNum: { flex: 0.9, textAlign: "right", fontVariant: ["tabular-nums"] },
+  universeLink: { color: "#2563EB" },
+  
+  // header text color override
+  universeTableHeaderText: { color: "white" },
+
   pos: { color: "#10B981" },
   neg: { color: "#EF4444" },
 
