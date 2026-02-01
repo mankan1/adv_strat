@@ -777,349 +777,590 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     return out;
   };
 
-  // ---------------------------
-  // Universe builder
-  // ---------------------------
-  const loadUniverseFromAlpaca = async () => {
-    setUniverseLoading(true);
-    setUniverseError("");
+// ---------------------------
+// Universe builder
+// ---------------------------
+const loadUniverseFromAlpaca = async () => {
+  setUniverseLoading(true);
+  setUniverseError("");
 
-    try {
-      const top = clampTop(universeTop);
+  try {
+    const top = clampTop(universeTop);
 
-      const mostActiveVolumeRowsRaw =
-        (mostActiveVolume?.most_actives || mostActiveVolume?.mostActives || [])
-          .map((x) => ({
-            symbol: x.symbol,
-            volume: toNum(x.volume ?? x.v ?? x.day_volume ?? x.dayVolume) ?? 0,
-            trades: toNum(x.trades ?? x.trade_count ?? x.tradeCount) ?? null,
-            price: toNum(x.price ?? x.last ?? x.last_price ?? x.lastPrice) ?? null,
-            changePct: toNum(x.change_pct ?? x.changePercent ?? x.pct_change) ?? null,
-          }))
-          .filter((x) => x.symbol);
+    // ✅ FIX: actually fetch these before referencing them
+    const mostActiveVolume = includeSources.mostActiveVolume
+      ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", { by: "volume", top })
+      : null;
 
-      const topTradedRowsRaw =
-        (topTraded?.most_actives || topTraded?.mostActives || [])
-          .map((x) => ({
-            symbol: x.symbol,
-            trades: toNum(x.trades ?? x.trade_count ?? x.tradeCount) ?? 0,
-            volume: toNum(x.volume ?? x.v ?? x.day_volume ?? x.dayVolume) ?? null,
-            price: toNum(x.price ?? x.last ?? x.last_price ?? x.lastPrice) ?? null,
-            changePct: toNum(x.change_pct ?? x.changePercent ?? x.pct_change) ?? null,
-          }))
-          .filter((x) => x.symbol);
+    const topTraded = includeSources.topTraded
+      ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", { by: "trades", top })
+      : null;
 
-      const gainersRowsRaw =
-        (movers?.gainers || [])
-          .map((x) => ({
-            symbol: x.symbol,
-            price: toNum(x.price ?? x.last ?? x.last_price) ?? null,
-            changePct: toNum(x.change_pct ?? x.percent_change ?? x.changePercent ?? x.pct_change) ?? null,
-            volume: toNum(x.volume ?? x.v) ?? null,
-          }))
-          .filter((x) => x.symbol);
+    const movers =
+      includeSources.moversGainers || includeSources.moversLosers
+        ? await alpacaFetchJson("/v1beta1/screener/stocks/movers")
+        : null;
 
-      const losersRowsRaw =
-        (movers?.losers || [])
-          .map((x) => ({
-            symbol: x.symbol,
-            price: toNum(x.price ?? x.last ?? x.last_price) ?? null,
-            changePct: toNum(x.change_pct ?? x.percent_change ?? x.changePercent ?? x.pct_change) ?? null,
-            volume: toNum(x.volume ?? x.v) ?? null,
-          }))
-          .filter((x) => x.symbol);
+    // ✅ now safe to parse
+    const mostActiveVolumeRowsRaw =
+      (mostActiveVolume?.most_actives || mostActiveVolume?.mostActives || [])
+        .map((x) => ({
+          symbol: x.symbol,
+          volume: toNum(x.volume ?? x.v ?? x.day_volume ?? x.dayVolume) ?? 0,
+          trades: toNum(x.trades ?? x.trade_count ?? x.tradeCount) ?? null,
+          price: toNum(x.price ?? x.last ?? x.last_price ?? x.lastPrice) ?? null,
+          changePct: toNum(x.change_pct ?? x.changePercent ?? x.pct_change) ?? null,
+        }))
+        .filter((x) => x.symbol);
 
-      const mostActiveVolumeSyms = mostActiveVolumeRowsRaw.map((x) => x.symbol);
-      const topTradedSyms = topTradedRowsRaw.map((x) => x.symbol);
-      const gainersSyms = gainersRowsRaw.map((x) => x.symbol);
-      const losersSyms = losersRowsRaw.map((x) => x.symbol);
+    const topTradedRowsRaw =
+      (topTraded?.most_actives || topTraded?.mostActives || [])
+        .map((x) => ({
+          symbol: x.symbol,
+          trades: toNum(x.trades ?? x.trade_count ?? x.tradeCount) ?? 0,
+          volume: toNum(x.volume ?? x.v ?? x.day_volume ?? x.dayVolume) ?? null,
+          price: toNum(x.price ?? x.last ?? x.last_price ?? x.lastPrice) ?? null,
+          changePct: toNum(x.change_pct ?? x.changePercent ?? x.pct_change) ?? null,
+        }))
+        .filter((x) => x.symbol);
 
-      // // 1) Most active by volume
-      // const mostActiveVolume = includeSources.mostActiveVolume
-      //   ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", {
-      //       by: "volume",
-      //       top,
-      //     })
-      //   : null;
+    const gainersRowsRaw =
+      (movers?.gainers || [])
+        .map((x) => ({
+          symbol: x.symbol,
+          price: toNum(x.price ?? x.last ?? x.last_price) ?? null,
+          changePct: toNum(x.change_pct ?? x.percent_change ?? x.changePercent ?? x.pct_change) ?? null,
+          volume: toNum(x.volume ?? x.v) ?? null,
+        }))
+        .filter((x) => x.symbol);
 
-      // // 2) Most active by trades
-      // const topTraded = includeSources.topTraded
-      //   ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", {
-      //       by: "trades",
-      //       top,
-      //     })
-      //   : null;
+    const losersRowsRaw =
+      (movers?.losers || [])
+        .map((x) => ({
+          symbol: x.symbol,
+          price: toNum(x.price ?? x.last ?? x.last_price) ?? null,
+          changePct: toNum(x.change_pct ?? x.percent_change ?? x.changePercent ?? x.pct_change) ?? null,
+          volume: toNum(x.volume ?? x.v) ?? null,
+        }))
+        .filter((x) => x.symbol);
 
-      // // 3) Movers (gainers/losers)
-      // const movers =
-      //   includeSources.moversGainers || includeSources.moversLosers
-      //     ? await alpacaFetchJson("/v1beta1/screener/stocks/movers") // ✅ NO top param
-      //     : null;
+    const mostActiveVolumeSyms = mostActiveVolumeRowsRaw.map((x) => x.symbol);
+    const topTradedSyms = topTradedRowsRaw.map((x) => x.symbol);
+    const gainersSyms = gainersRowsRaw.map((x) => x.symbol);
+    const losersSyms = losersRowsRaw.map((x) => x.symbol);
 
-      // const mostActiveVolumeSyms = (mostActiveVolume?.most_actives || mostActiveVolume?.mostActives || [])
-      //   .map((x) => x.symbol)
-      //   .filter(Boolean);
+    // Merge base universe BEFORE snapshot-based gap/trending
+    const baseUnion = uniq([
+      ...(includeSources.mostActiveVolume ? mostActiveVolumeSyms : []),
+      ...(includeSources.topTraded ? topTradedSyms : []),
+      ...(includeSources.moversGainers ? gainersSyms : []),
+      ...(includeSources.moversLosers ? losersSyms : []),
+    ]);
 
-      // const topTradedSyms = (topTraded?.most_actives || topTraded?.mostActives || [])
-      //   .map((x) => x.symbol)
-      //   .filter(Boolean);
+    // 4) Snapshots for gap + trending calculations
+    const chunkSize = 200;
+    const snapshotMap = {};
+    for (let i = 0; i < baseUnion.length; i += chunkSize) {
+      const chunk = baseUnion.slice(i, i + chunkSize);
+      const snap = await alpacaFetchJson("/v2/stocks/snapshots", { symbols: chunk.join(",") });
+      Object.assign(snapshotMap, snap || {});
+      await sleep(120);
+    }
 
-      // const gainersSyms = (movers?.gainers || []).map((x) => x.symbol).filter(Boolean);
-      // const losersSyms = (movers?.losers || []).map((x) => x.symbol).filter(Boolean);
-
-      // Merge base universe BEFORE snapshot-based gap/trending
-      const baseUnion = uniq([
-        ...(includeSources.mostActiveVolume ? mostActiveVolumeSyms : []),
-        ...(includeSources.topTraded ? topTradedSyms : []),
-        ...(includeSources.moversGainers ? gainersSyms : []),
-        ...(includeSources.moversLosers ? losersSyms : []),
-      ]);
-
-      // 4) Snapshots for gap + trending calculations
-      const chunkSize = 200; // safe-ish
-      const snapshotMap = {};
-      for (let i = 0; i < baseUnion.length; i += chunkSize) {
-        const chunk = baseUnion.slice(i, i + chunkSize);
-        const snap = await alpacaFetchJson("/v2/stocks/snapshots", {
-          symbols: chunk.join(","),
-        });
-
-        Object.assign(snapshotMap, snap || {});
-        await sleep(120); // small spacing
-      }
-
-      const gapStats = baseUnion
-        .map((sym) => {
-          const s = snapshotMap?.[sym];
-          const daily = s?.dailyBar;
-          const prev = s?.prevDailyBar;
-          if (!daily || !prev || !prev.c || !daily.o) return null;
-
-          const gapPct = ((daily.o - prev.c) / prev.c) * 100;
-          const dayChangePct = prev.c ? (((daily.c ?? daily.o) - prev.c) / prev.c) * 100 : null;
-          const dayVol = daily.v ?? 0;
-
-          return {
-            symbol: sym,
-            gapPct,
-            dayChangePct,
-            dayVol,
-          };
-        })
-        .filter(Boolean);
-
-      // const gapUps = gapStats
-      //   .slice()
-      //   .sort((a, b) => b.gapPct - a.gapPct)
-      //   .slice(0, top)
-      //   .map((x) => x.symbol);
-
-      // const gapDowns = gapStats
-      //   .slice()
-      //   .sort((a, b) => a.gapPct - b.gapPct)
-      //   .slice(0, top)
-      //   .map((x) => x.symbol);
-
-      // // Trending heuristic
-      // const trending = gapStats
-      //   .map((x) => {
-      //     const absMove = Math.abs(x.dayChangePct ?? 0);
-      //     const volScore = Math.log10((x.dayVol ?? 0) + 1);
-      //     const score = absMove * 1.2 + volScore * 3;
-      //     return { ...x, score };
-      //   })
-      //   .sort((a, b) => b.score - a.score)
-      //   .slice(0, top)
-      //   .map((x) => x.symbol);
-      const gapUpsRows = gapStats
-        .slice()
-        .sort((a, b) => b.gapPct - a.gapPct)
-        .slice(0, top)
-        .map((x) => {
-          const s = snapshotMap?.[x.symbol];
-          const daily = s?.dailyBar;
-          const prev = s?.prevDailyBar;
-          const last =
-            s?.latestTrade?.p ??
-            s?.latestQuote?.ap ??
-            daily?.c ??
-            daily?.o ??
-            null;
-
-          const vol = daily?.v ?? 0;
-          const prevClose = prev?.c ?? null;
-          const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
-
-          return {
-            symbol: x.symbol,
-            gapPct: x.gapPct,
-            price: last,
-            changePct,
-            volume: vol,
-          };
-        });
-
-      const gapDownsRows = gapStats
-        .slice()
-        .sort((a, b) => a.gapPct - b.gapPct)
-        .slice(0, top)
-        .map((x) => {
-          const s = snapshotMap?.[x.symbol];
-          const daily = s?.dailyBar;
-          const prev = s?.prevDailyBar;
-          const last =
-            s?.latestTrade?.p ??
-            s?.latestQuote?.ap ??
-            daily?.c ??
-            daily?.o ??
-            null;
-
-          const vol = daily?.v ?? 0;
-          const prevClose = prev?.c ?? null;
-          const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
-
-          return {
-            symbol: x.symbol,
-            gapPct: x.gapPct,
-            price: last,
-            changePct,
-            volume: vol,
-          };
-        });
-
-      const trendingRows = gapStats
-        .map((x) => {
-          const absMove = Math.abs(x.dayChangePct ?? 0);
-          const volScore = Math.log10((x.dayVol ?? 0) + 1);
-          const trendScore = absMove * 1.2 + volScore * 3;
-
-          const s = snapshotMap?.[x.symbol];
-          const daily = s?.dailyBar;
-          const prev = s?.prevDailyBar;
-          const last =
-            s?.latestTrade?.p ??
-            s?.latestQuote?.ap ??
-            daily?.c ??
-            daily?.o ??
-            null;
-
-          const vol = daily?.v ?? 0;
-          const prevClose = prev?.c ?? null;
-          const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
-
-          return {
-            symbol: x.symbol,
-            trendScore,
-            gapPct: x.gapPct,
-            price: last,
-            changePct,
-            volume: vol,
-          };
-        })
-        .sort((a, b) => b.trendScore - a.trendScore)
-        .slice(0, top);
-
-      const gapUps = gapUpsRows.map((x) => x.symbol);
-      const gapDowns = gapDownsRows.map((x) => x.symbol);
-      const trending = trendingRows.map((x) => x.symbol);        
-
-      // Final merged list based on toggles
-      const merged = uniq([
-        ...(includeSources.mostActiveVolume ? mostActiveVolumeSyms : []),
-        ...(includeSources.topTraded ? topTradedSyms : []),
-        ...(includeSources.moversGainers ? gainersSyms : []),
-        ...(includeSources.moversLosers ? losersSyms : []),
-        ...(includeSources.gapUps ? gapUps : []),
-        ...(includeSources.gapDowns ? gapDowns : []),
-        ...(includeSources.trending ? trending : []),
-      ]).slice(0, top); // ✅ show up to 100 in Universe
-
-      // Build rows with price + change + volume from snapshots
-      const mergedRows = merged.map((sym) => {
+    const gapStats = baseUnion
+      .map((sym) => {
         const s = snapshotMap?.[sym];
         const daily = s?.dailyBar;
         const prev = s?.prevDailyBar;
-        const last =
-          s?.latestTrade?.p ??
-          s?.latestQuote?.ap ??
-          daily?.c ??
-          daily?.o ??
-          null;
+        if (!daily || !prev || !prev.c || !daily.o) return null;
 
+        const gapPct = ((daily.o - prev.c) / prev.c) * 100;
+        const dayChangePct = prev.c ? (((daily.c ?? daily.o) - prev.c) / prev.c) * 100 : null;
+        const dayVol = daily.v ?? 0;
+
+        return { symbol: sym, gapPct, dayChangePct, dayVol };
+      })
+      .filter(Boolean);
+
+    const gapUpsRows = gapStats
+      .slice()
+      .sort((a, b) => b.gapPct - a.gapPct)
+      .slice(0, top)
+      .map((x) => {
+        const s = snapshotMap?.[x.symbol];
+        const daily = s?.dailyBar;
+        const prev = s?.prevDailyBar;
+        const last = s?.latestTrade?.p ?? s?.latestQuote?.ap ?? daily?.c ?? daily?.o ?? null;
         const vol = daily?.v ?? 0;
-
         const prevClose = prev?.c ?? null;
-        const changePct =
-          prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
+        const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
 
-        return {
-          symbol: sym,
-          price: last,
-          changePct,
-          volume: vol,
-        };
+        return { symbol: x.symbol, gapPct: x.gapPct, price: last, changePct, volume: vol };
       });
 
-      setUniverseMeta({
-        mostActiveVolume: mostActiveVolumeSyms,
-        topTraded: topTradedSyms,
-        gainers: gainersSyms,
-        losers: losersSyms,
-        gapUps,
-        gapDowns,
-        trending,
-        merged,
-      //   mergedRows, // ✅
-      // });
-        mostActiveVolumeRows: mostActiveVolumeRowsRaw
+    const gapDownsRows = gapStats
+      .slice()
+      .sort((a, b) => a.gapPct - b.gapPct)
+      .slice(0, top)
+      .map((x) => {
+        const s = snapshotMap?.[x.symbol];
+        const daily = s?.dailyBar;
+        const prev = s?.prevDailyBar;
+        const last = s?.latestTrade?.p ?? s?.latestQuote?.ap ?? daily?.c ?? daily?.o ?? null;
+        const vol = daily?.v ?? 0;
+        const prevClose = prev?.c ?? null;
+        const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
+
+        return { symbol: x.symbol, gapPct: x.gapPct, price: last, changePct, volume: vol };
+      });
+
+    const trendingRows = gapStats
+      .map((x) => {
+        const absMove = Math.abs(x.dayChangePct ?? 0);
+        const volScore = Math.log10((x.dayVol ?? 0) + 1);
+        const trendScore = absMove * 1.2 + volScore * 3;
+
+        const s = snapshotMap?.[x.symbol];
+        const daily = s?.dailyBar;
+        const prev = s?.prevDailyBar;
+        const last = s?.latestTrade?.p ?? s?.latestQuote?.ap ?? daily?.c ?? daily?.o ?? null;
+        const vol = daily?.v ?? 0;
+        const prevClose = prev?.c ?? null;
+        const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
+
+        return { symbol: x.symbol, trendScore, gapPct: x.gapPct, price: last, changePct, volume: vol };
+      })
+      .sort((a, b) => b.trendScore - a.trendScore)
+      .slice(0, top);
+
+    const gapUps = gapUpsRows.map((x) => x.symbol);
+    const gapDowns = gapDownsRows.map((x) => x.symbol);
+    const trending = trendingRows.map((x) => x.symbol);
+
+    const merged = uniq([
+      ...(includeSources.mostActiveVolume ? mostActiveVolumeSyms : []),
+      ...(includeSources.topTraded ? topTradedSyms : []),
+      ...(includeSources.moversGainers ? gainersSyms : []),
+      ...(includeSources.moversLosers ? losersSyms : []),
+      ...(includeSources.gapUps ? gapUps : []),
+      ...(includeSources.gapDowns ? gapDowns : []),
+      ...(includeSources.trending ? trending : []),
+    ]).slice(0, top);
+
+    const mergedRows = merged.map((sym) => {
+      const s = snapshotMap?.[sym];
+      const daily = s?.dailyBar;
+      const prev = s?.prevDailyBar;
+
+      const last = s?.latestTrade?.p ?? s?.latestQuote?.ap ?? daily?.c ?? daily?.o ?? null;
+      const vol = daily?.v ?? 0;
+
+      const prevClose = prev?.c ?? null;
+      const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
+
+      return { symbol: sym, price: last, changePct, volume: vol };
+    });
+
+    setUniverseMeta({
+      mostActiveVolume: mostActiveVolumeSyms,
+      topTraded: topTradedSyms,
+      gainers: gainersSyms,
+      losers: losersSyms,
+      gapUps,
+      gapDowns,
+      trending,
+      merged,
+
+      mostActiveVolumeRows: mostActiveVolumeRowsRaw
         .slice()
         .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))
         .slice(0, top),
 
-        topTradedRows: topTradedRowsRaw
+      topTradedRows: topTradedRowsRaw
         .slice()
         .sort((a, b) => (b.trades ?? 0) - (a.trades ?? 0))
         .slice(0, top),
 
-        gainersRows: gainersRowsRaw
+      gainersRows: gainersRowsRaw
         .slice()
         .sort((a, b) => (b.changePct ?? -9999) - (a.changePct ?? -9999))
         .slice(0, top),
 
-        losersRows: losersRowsRaw
+      losersRows: losersRowsRaw
         .slice()
         .sort((a, b) => (a.changePct ?? 9999) - (b.changePct ?? 9999))
         .slice(0, top),
 
-        gapUpsRows,
-        gapDownsRows,
-        trendingRows,
+      gapUpsRows,
+      gapDownsRows,
+      trendingRows,
 
-        mergedRows: mergedRows
-          .slice()
-          .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0)),
-      });      
+      mergedRows: mergedRows.slice().sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0)),
+    });
 
-      // ✅ NEW: load company metadata for merged + the per-view lists
-      const companySymbols = uniq([
-        ...merged,
-        ...mostActiveVolumeSyms,
-        ...topTradedSyms,
-        ...gainersSyms,
-        ...losersSyms,
-        ...gapUps,
-        ...gapDowns,
-        ...trending,
-      ]).slice(0, 250); // safety cap
+    // ✅ company meta for sectors
+    const companySymbols = uniq([
+      ...merged,
+      ...mostActiveVolumeSyms,
+      ...topTradedSyms,
+      ...gainersSyms,
+      ...losersSyms,
+      ...gapUps,
+      ...gapDowns,
+      ...trending,
+    ]).slice(0, 250);
 
-      await loadCompanyMetaForSymbols(companySymbols);
+    await loadCompanyMetaForSymbols(companySymbols);
+  } catch (e) {
+    setUniverseError(String(e?.message || e));
+  } finally {
+    setUniverseLoading(false);
+  }
+};
 
-    } catch (e) {
-      setUniverseError(String(e?.message || e));
-    } finally {
-      setUniverseLoading(false);
-    }
-  };
+  // ---------------------------
+  // Universe builder
+  // ---------------------------
+  // const loadUniverseFromAlpaca = async () => {
+  //   setUniverseLoading(true);
+  //   setUniverseError("");
+
+  //   try {
+  //     const top = clampTop(universeTop);
+
+  //     const mostActiveVolumeRowsRaw =
+  //       (mostActiveVolume?.most_actives || mostActiveVolume?.mostActives || [])
+  //         .map((x) => ({
+  //           symbol: x.symbol,
+  //           volume: toNum(x.volume ?? x.v ?? x.day_volume ?? x.dayVolume) ?? 0,
+  //           trades: toNum(x.trades ?? x.trade_count ?? x.tradeCount) ?? null,
+  //           price: toNum(x.price ?? x.last ?? x.last_price ?? x.lastPrice) ?? null,
+  //           changePct: toNum(x.change_pct ?? x.changePercent ?? x.pct_change) ?? null,
+  //         }))
+  //         .filter((x) => x.symbol);
+
+  //     const topTradedRowsRaw =
+  //       (topTraded?.most_actives || topTraded?.mostActives || [])
+  //         .map((x) => ({
+  //           symbol: x.symbol,
+  //           trades: toNum(x.trades ?? x.trade_count ?? x.tradeCount) ?? 0,
+  //           volume: toNum(x.volume ?? x.v ?? x.day_volume ?? x.dayVolume) ?? null,
+  //           price: toNum(x.price ?? x.last ?? x.last_price ?? x.lastPrice) ?? null,
+  //           changePct: toNum(x.change_pct ?? x.changePercent ?? x.pct_change) ?? null,
+  //         }))
+  //         .filter((x) => x.symbol);
+
+  //     const gainersRowsRaw =
+  //       (movers?.gainers || [])
+  //         .map((x) => ({
+  //           symbol: x.symbol,
+  //           price: toNum(x.price ?? x.last ?? x.last_price) ?? null,
+  //           changePct: toNum(x.change_pct ?? x.percent_change ?? x.changePercent ?? x.pct_change) ?? null,
+  //           volume: toNum(x.volume ?? x.v) ?? null,
+  //         }))
+  //         .filter((x) => x.symbol);
+
+  //     const losersRowsRaw =
+  //       (movers?.losers || [])
+  //         .map((x) => ({
+  //           symbol: x.symbol,
+  //           price: toNum(x.price ?? x.last ?? x.last_price) ?? null,
+  //           changePct: toNum(x.change_pct ?? x.percent_change ?? x.changePercent ?? x.pct_change) ?? null,
+  //           volume: toNum(x.volume ?? x.v) ?? null,
+  //         }))
+  //         .filter((x) => x.symbol);
+
+  //     const mostActiveVolumeSyms = mostActiveVolumeRowsRaw.map((x) => x.symbol);
+  //     const topTradedSyms = topTradedRowsRaw.map((x) => x.symbol);
+  //     const gainersSyms = gainersRowsRaw.map((x) => x.symbol);
+  //     const losersSyms = losersRowsRaw.map((x) => x.symbol);
+
+  //     // // 1) Most active by volume
+  //     // const mostActiveVolume = includeSources.mostActiveVolume
+  //     //   ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", {
+  //     //       by: "volume",
+  //     //       top,
+  //     //     })
+  //     //   : null;
+
+  //     // // 2) Most active by trades
+  //     // const topTraded = includeSources.topTraded
+  //     //   ? await alpacaFetchJson("/v1beta1/screener/stocks/most-actives", {
+  //     //       by: "trades",
+  //     //       top,
+  //     //     })
+  //     //   : null;
+
+  //     // // 3) Movers (gainers/losers)
+  //     // const movers =
+  //     //   includeSources.moversGainers || includeSources.moversLosers
+  //     //     ? await alpacaFetchJson("/v1beta1/screener/stocks/movers") // ✅ NO top param
+  //     //     : null;
+
+  //     // const mostActiveVolumeSyms = (mostActiveVolume?.most_actives || mostActiveVolume?.mostActives || [])
+  //     //   .map((x) => x.symbol)
+  //     //   .filter(Boolean);
+
+  //     // const topTradedSyms = (topTraded?.most_actives || topTraded?.mostActives || [])
+  //     //   .map((x) => x.symbol)
+  //     //   .filter(Boolean);
+
+  //     // const gainersSyms = (movers?.gainers || []).map((x) => x.symbol).filter(Boolean);
+  //     // const losersSyms = (movers?.losers || []).map((x) => x.symbol).filter(Boolean);
+
+  //     // Merge base universe BEFORE snapshot-based gap/trending
+  //     const baseUnion = uniq([
+  //       ...(includeSources.mostActiveVolume ? mostActiveVolumeSyms : []),
+  //       ...(includeSources.topTraded ? topTradedSyms : []),
+  //       ...(includeSources.moversGainers ? gainersSyms : []),
+  //       ...(includeSources.moversLosers ? losersSyms : []),
+  //     ]);
+
+  //     // 4) Snapshots for gap + trending calculations
+  //     const chunkSize = 200; // safe-ish
+  //     const snapshotMap = {};
+  //     for (let i = 0; i < baseUnion.length; i += chunkSize) {
+  //       const chunk = baseUnion.slice(i, i + chunkSize);
+  //       const snap = await alpacaFetchJson("/v2/stocks/snapshots", {
+  //         symbols: chunk.join(","),
+  //       });
+
+  //       Object.assign(snapshotMap, snap || {});
+  //       await sleep(120); // small spacing
+  //     }
+
+  //     const gapStats = baseUnion
+  //       .map((sym) => {
+  //         const s = snapshotMap?.[sym];
+  //         const daily = s?.dailyBar;
+  //         const prev = s?.prevDailyBar;
+  //         if (!daily || !prev || !prev.c || !daily.o) return null;
+
+  //         const gapPct = ((daily.o - prev.c) / prev.c) * 100;
+  //         const dayChangePct = prev.c ? (((daily.c ?? daily.o) - prev.c) / prev.c) * 100 : null;
+  //         const dayVol = daily.v ?? 0;
+
+  //         return {
+  //           symbol: sym,
+  //           gapPct,
+  //           dayChangePct,
+  //           dayVol,
+  //         };
+  //       })
+  //       .filter(Boolean);
+
+  //     // const gapUps = gapStats
+  //     //   .slice()
+  //     //   .sort((a, b) => b.gapPct - a.gapPct)
+  //     //   .slice(0, top)
+  //     //   .map((x) => x.symbol);
+
+  //     // const gapDowns = gapStats
+  //     //   .slice()
+  //     //   .sort((a, b) => a.gapPct - b.gapPct)
+  //     //   .slice(0, top)
+  //     //   .map((x) => x.symbol);
+
+  //     // // Trending heuristic
+  //     // const trending = gapStats
+  //     //   .map((x) => {
+  //     //     const absMove = Math.abs(x.dayChangePct ?? 0);
+  //     //     const volScore = Math.log10((x.dayVol ?? 0) + 1);
+  //     //     const score = absMove * 1.2 + volScore * 3;
+  //     //     return { ...x, score };
+  //     //   })
+  //     //   .sort((a, b) => b.score - a.score)
+  //     //   .slice(0, top)
+  //     //   .map((x) => x.symbol);
+  //     const gapUpsRows = gapStats
+  //       .slice()
+  //       .sort((a, b) => b.gapPct - a.gapPct)
+  //       .slice(0, top)
+  //       .map((x) => {
+  //         const s = snapshotMap?.[x.symbol];
+  //         const daily = s?.dailyBar;
+  //         const prev = s?.prevDailyBar;
+  //         const last =
+  //           s?.latestTrade?.p ??
+  //           s?.latestQuote?.ap ??
+  //           daily?.c ??
+  //           daily?.o ??
+  //           null;
+
+  //         const vol = daily?.v ?? 0;
+  //         const prevClose = prev?.c ?? null;
+  //         const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
+
+  //         return {
+  //           symbol: x.symbol,
+  //           gapPct: x.gapPct,
+  //           price: last,
+  //           changePct,
+  //           volume: vol,
+  //         };
+  //       });
+
+  //     const gapDownsRows = gapStats
+  //       .slice()
+  //       .sort((a, b) => a.gapPct - b.gapPct)
+  //       .slice(0, top)
+  //       .map((x) => {
+  //         const s = snapshotMap?.[x.symbol];
+  //         const daily = s?.dailyBar;
+  //         const prev = s?.prevDailyBar;
+  //         const last =
+  //           s?.latestTrade?.p ??
+  //           s?.latestQuote?.ap ??
+  //           daily?.c ??
+  //           daily?.o ??
+  //           null;
+
+  //         const vol = daily?.v ?? 0;
+  //         const prevClose = prev?.c ?? null;
+  //         const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
+
+  //         return {
+  //           symbol: x.symbol,
+  //           gapPct: x.gapPct,
+  //           price: last,
+  //           changePct,
+  //           volume: vol,
+  //         };
+  //       });
+
+  //     const trendingRows = gapStats
+  //       .map((x) => {
+  //         const absMove = Math.abs(x.dayChangePct ?? 0);
+  //         const volScore = Math.log10((x.dayVol ?? 0) + 1);
+  //         const trendScore = absMove * 1.2 + volScore * 3;
+
+  //         const s = snapshotMap?.[x.symbol];
+  //         const daily = s?.dailyBar;
+  //         const prev = s?.prevDailyBar;
+  //         const last =
+  //           s?.latestTrade?.p ??
+  //           s?.latestQuote?.ap ??
+  //           daily?.c ??
+  //           daily?.o ??
+  //           null;
+
+  //         const vol = daily?.v ?? 0;
+  //         const prevClose = prev?.c ?? null;
+  //         const changePct = prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
+
+  //         return {
+  //           symbol: x.symbol,
+  //           trendScore,
+  //           gapPct: x.gapPct,
+  //           price: last,
+  //           changePct,
+  //           volume: vol,
+  //         };
+  //       })
+  //       .sort((a, b) => b.trendScore - a.trendScore)
+  //       .slice(0, top);
+
+  //     const gapUps = gapUpsRows.map((x) => x.symbol);
+  //     const gapDowns = gapDownsRows.map((x) => x.symbol);
+  //     const trending = trendingRows.map((x) => x.symbol);        
+
+  //     // Final merged list based on toggles
+  //     const merged = uniq([
+  //       ...(includeSources.mostActiveVolume ? mostActiveVolumeSyms : []),
+  //       ...(includeSources.topTraded ? topTradedSyms : []),
+  //       ...(includeSources.moversGainers ? gainersSyms : []),
+  //       ...(includeSources.moversLosers ? losersSyms : []),
+  //       ...(includeSources.gapUps ? gapUps : []),
+  //       ...(includeSources.gapDowns ? gapDowns : []),
+  //       ...(includeSources.trending ? trending : []),
+  //     ]).slice(0, top); // ✅ show up to 100 in Universe
+
+  //     // Build rows with price + change + volume from snapshots
+  //     const mergedRows = merged.map((sym) => {
+  //       const s = snapshotMap?.[sym];
+  //       const daily = s?.dailyBar;
+  //       const prev = s?.prevDailyBar;
+  //       const last =
+  //         s?.latestTrade?.p ??
+  //         s?.latestQuote?.ap ??
+  //         daily?.c ??
+  //         daily?.o ??
+  //         null;
+
+  //       const vol = daily?.v ?? 0;
+
+  //       const prevClose = prev?.c ?? null;
+  //       const changePct =
+  //         prevClose && last ? ((last - prevClose) / prevClose) * 100 : null;
+
+  //       return {
+  //         symbol: sym,
+  //         price: last,
+  //         changePct,
+  //         volume: vol,
+  //       };
+  //     });
+
+  //     setUniverseMeta({
+  //       mostActiveVolume: mostActiveVolumeSyms,
+  //       topTraded: topTradedSyms,
+  //       gainers: gainersSyms,
+  //       losers: losersSyms,
+  //       gapUps,
+  //       gapDowns,
+  //       trending,
+  //       merged,
+  //     //   mergedRows, // ✅
+  //     // });
+  //       mostActiveVolumeRows: mostActiveVolumeRowsRaw
+  //       .slice()
+  //       .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))
+  //       .slice(0, top),
+
+  //       topTradedRows: topTradedRowsRaw
+  //       .slice()
+  //       .sort((a, b) => (b.trades ?? 0) - (a.trades ?? 0))
+  //       .slice(0, top),
+
+  //       gainersRows: gainersRowsRaw
+  //       .slice()
+  //       .sort((a, b) => (b.changePct ?? -9999) - (a.changePct ?? -9999))
+  //       .slice(0, top),
+
+  //       losersRows: losersRowsRaw
+  //       .slice()
+  //       .sort((a, b) => (a.changePct ?? 9999) - (b.changePct ?? 9999))
+  //       .slice(0, top),
+
+  //       gapUpsRows,
+  //       gapDownsRows,
+  //       trendingRows,
+
+  //       mergedRows: mergedRows
+  //         .slice()
+  //         .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0)),
+  //     });      
+
+  //     // ✅ NEW: load company metadata for merged + the per-view lists
+  //     const companySymbols = uniq([
+  //       ...merged,
+  //       ...mostActiveVolumeSyms,
+  //       ...topTradedSyms,
+  //       ...gainersSyms,
+  //       ...losersSyms,
+  //       ...gapUps,
+  //       ...gapDowns,
+  //       ...trending,
+  //     ]).slice(0, 250); // safety cap
+
+  //     await loadCompanyMetaForSymbols(companySymbols);
+
+  //   } catch (e) {
+  //     setUniverseError(String(e?.message || e));
+  //   } finally {
+  //     setUniverseLoading(false);
+  //   }
+  // };
 
   const openYahoo = (symbol) => {
     const url = `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}`;
@@ -2957,7 +3198,92 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
         return universeMeta.mergedRows || [];
     }
   };
+  const sectorStats = useMemo(() => {
+    const syms = (universeMeta.merged || []).slice(0, 100);
+    const counts = {};
+    let known = 0;
+  
+    for (const sym of syms) {
+      const s = (companyMeta?.[String(sym).toUpperCase()]?.sector || "").trim();
+      const sector = s || "Unknown";
+      counts[sector] = (counts[sector] || 0) + 1;
+      if (sector !== "Unknown") known++;
+    }
+  
+    const total = syms.length || 1;
+    const rows = Object.entries(counts)
+      .map(([sector, count]) => ({
+        sector,
+        count,
+        pct: (count / total) * 100,
+      }))
+      .sort((a, b) => b.count - a.count);
+  
+    return {
+      total,
+      known,
+      rows,
+    };
+  }, [universeMeta.merged, companyMeta]);
 
+  const renderSectorDistribution = () => {
+    const rows = sectorStats.rows || [];
+    if (!rows.length) return null;
+  
+    // show top N, bucket the rest as "Other"
+    const topN = 7;
+    const topRows = rows.slice(0, topN);
+    const rest = rows.slice(topN);
+    const otherCount = rest.reduce((s, r) => s + r.count, 0);
+    const total = sectorStats.total || 1;
+  
+    const finalRows = otherCount > 0
+      ? [...topRows, { sector: "Other", count: otherCount, pct: (otherCount / total) * 100 }]
+      : topRows;
+  
+    return (
+      <View style={styles.sectorCard}>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "baseline" }}>
+          <Text style={styles.sectorTitle}>Sector Mix (Merged)</Text>
+          <Text style={styles.sectorSub}>
+            {sectorStats.known}/{sectorStats.total} labeled
+          </Text>
+        </View>
+  
+        {/* “Pie-like” stacked bar */}
+        <View style={styles.sectorBar}>
+          {finalRows.map((r) => (
+            <View
+              key={r.sector}
+              style={[
+                styles.sectorSlice,
+                { flex: Math.max(0.01, r.pct) }, // keep tiny slices visible
+              ]}
+            />
+          ))}
+        </View>
+  
+        {/* Legend */}
+        <View style={{ marginTop: 10 }}>
+          {finalRows.map((r) => (
+            <View key={`leg-${r.sector}`} style={styles.sectorLegendRow}>
+              <Text style={styles.sectorLegendText} numberOfLines={1}>
+                {r.sector}
+              </Text>
+              <Text style={styles.sectorLegendPct}>
+                {r.count} • {r.pct.toFixed(1)}%
+              </Text>
+            </View>
+          ))}
+        </View>
+  
+        <Text style={styles.sectorHint}>
+          Tip: hit “Refresh Names/Sectors” if you see lots of Unknown.
+        </Text>
+      </View>
+    );
+  };
+    
   const getCompanyLabel = (sym) => {
     const m = companyMeta?.[String(sym || "").toUpperCase()];
     return {
@@ -3067,22 +3393,24 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
           {companyMetaError ? <Text style={styles.errorText}>{companyMetaError}</Text> : null}
 
           <View style={styles.metaGrid}>
-            {[
-              ["mostActiveVolume", universeMeta.mostActiveVolume.length],
-              ["topTraded", universeMeta.topTraded.length],
-              ["gainers", universeMeta.gainers.length],
-              ["losers", universeMeta.losers.length],
-              ["gapUps", universeMeta.gapUps.length],
-              ["gapDowns", universeMeta.gapDowns.length],
-              ["trending", universeMeta.trending.length],
-              ["merged", universeMeta.merged.length],
-            ].map(([k, n]) => (
-              <View key={k} style={styles.metaCell}>
-                <Text style={styles.metaKey}>{k}</Text>
-                <Text style={styles.metaVal}>{n}</Text>
-              </View>
-            ))}
-          </View>
+          {[
+            ["mostActiveVolume", universeMeta.mostActiveVolume.length],
+            ["topTraded", universeMeta.topTraded.length],
+            ["gainers", universeMeta.gainers.length],
+            ["losers", universeMeta.losers.length],
+            ["gapUps", universeMeta.gapUps.length],
+            ["gapDowns", universeMeta.gapDowns.length],
+            ["trending", universeMeta.trending.length],
+            ["merged", universeMeta.merged.length],
+          ].map(([k, n]) => (
+            <View key={k} style={styles.metaCell}>
+              <Text style={styles.metaKey}>{k}</Text>
+              <Text style={styles.metaVal}>{n}</Text>
+            </View>
+          ))}
+        </View>
+
+        {renderSectorDistribution()}
 
           {/* ✅ NEW: View buttons */}
           <Text style={[styles.panelTitle, { marginTop: 12, fontSize: 15 }]}>Views</Text>
@@ -3619,6 +3947,62 @@ return (
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f5f5f5" },
+  sectorCard: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "rgba(17,24,39,0.08)",
+  },
+  sectorTitle: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#111827",
+  },
+  sectorSub: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#6B7280",
+  },
+  sectorBar: {
+    marginTop: 10,
+    height: 14,
+    borderRadius: 999,
+    overflow: "hidden",
+    flexDirection: "row",
+    backgroundColor: "rgba(17,24,39,0.06)",
+  },
+  sectorSlice: {
+    // no explicit colors per slice (keeps it “simple”)
+    // alternate subtle shades via opacity using backgroundColor + margin
+    backgroundColor: "rgba(17,24,39,0.35)",
+    marginRight: 2,
+  },
+  sectorLegendRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 4,
+  },
+  sectorLegendText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#111827",
+    paddingRight: 10,
+  },
+  sectorLegendPct: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#6B7280",
+  },
+  sectorHint: {
+    marginTop: 8,
+    fontSize: 11,
+    color: "#6B7280",
+    fontWeight: "700",
+  },
 
   tapHint: {
     marginTop: 10,
