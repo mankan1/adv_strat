@@ -785,24 +785,92 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
 
     setCompanyMetaLoading(true);
     setCompanyMetaError("");
+    // try {
+    //   const out = {};
+    //   const batchSize = 50;
+    //   for (let i = 0; i < missing.length; i += batchSize) {
+    //     const batch = missing.slice(i, i + batchSize);
+    //     const json = await tradierFetchFundamentalsCompanies(batch.join(","));
+    //     const rows = normalizeTradierCompanies(json);
+    //     rows.forEach((r) => {
+    //       const best = pickBestCompanyRow(r);
+    //       if (!best?.symbol) return;
+    //       out[best.symbol] = {
+    //         name: best.name || null,
+    //         sector: best.sector || null,
+    //         industry: best.industry || null,
+    //       };
+    //     });
+    //     await sleep(120);
+    //   }
+    //   if (Object.keys(out).length) {
+    //     setCompanyMeta((prev) => ({ ...prev, ...out }));
+    //   }
+    // } catch (e) {
+    //   setCompanyMetaError(String(e?.message || e));
+    // } finally {
+    //   setCompanyMetaLoading(false);
+    // }
     try {
       const out = {};
-      const batchSize = 50;
+    
+      // Tradier fundamentals endpoints can choke on big symbol lists.
+      const batchSize = 8;           // <-- was 50; keep 5–10 to avoid 502 body overflow
+      const baseDelayMs = 150;       // delay between successful batches
+    
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    
+      // Retry only on transient errors (502/429/5xx)
+      const shouldRetry = (err) => {
+        const msg = String(err?.message || err || "");
+        // try to detect status from your thrown error string: "... failed 502: ..."
+        const m = msg.match(/\b(429|502|503|504|500)\b/);
+        return !!m;
+      };
+    
+      const fetchWithRetry = async (symbolsCsv, maxAttempts = 4) => {
+        let attempt = 0;
+        let lastErr;
+    
+        while (attempt < maxAttempts) {
+          try {
+            return await tradierFetchFundamentalsCompanies(symbolsCsv);
+          } catch (e) {
+            lastErr = e;
+            attempt++;
+    
+            if (!shouldRetry(e) || attempt >= maxAttempts) break;
+    
+            // exponential backoff w/ a little jitter
+            const backoff = Math.min(2000, baseDelayMs * Math.pow(2, attempt));
+            const jitter = Math.floor(Math.random() * 120);
+            await sleep(backoff + jitter);
+          }
+        }
+    
+        throw lastErr;
+      };
+    
       for (let i = 0; i < missing.length; i += batchSize) {
         const batch = missing.slice(i, i + batchSize);
-        const json = await tradierFetchFundamentalsCompanies(batch.join(","));
+    
+        const json = await fetchWithRetry(batch.join(","), 4);
         const rows = normalizeTradierCompanies(json);
+    
         rows.forEach((r) => {
           const best = pickBestCompanyRow(r);
           if (!best?.symbol) return;
+    
           out[best.symbol] = {
             name: best.name || null,
             sector: best.sector || null,
             industry: best.industry || null,
           };
         });
-        await sleep(120);
+    
+        await sleep(baseDelayMs);
       }
+    
       if (Object.keys(out).length) {
         setCompanyMeta((prev) => ({ ...prev, ...out }));
       }
@@ -810,7 +878,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
       setCompanyMetaError(String(e?.message || e));
     } finally {
       setCompanyMetaLoading(false);
-    }
+    }    
   };
 
   // ---------------------------
