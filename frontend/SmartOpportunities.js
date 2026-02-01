@@ -1321,7 +1321,8 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
 
     try {
       for (let i = 0; i < symbolsToScan.length; i++) {
-        if (!scanning) {
+        // if (!scanning) {
+        if (cancelScanRef.current) {
           // user hit cancel UI
           setScanStoppedReason("cancelled");
           setPartialResults(allOpportunities.length > 0);
