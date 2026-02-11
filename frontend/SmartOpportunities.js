@@ -1020,6 +1020,55 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     Linking.openURL(url).catch(() => Alert.alert("Link error", "Could not open Yahoo Finance."));
   };
 
+  // Try to open symbol in Thinkorswim (mobile). Falls back gracefully.
+  const openThinkorswim = async (symbol) => {
+    const sym = String(symbol || "").toUpperCase().trim();
+    if (!sym) return;
+
+    // Thinkorswim deep links are not consistently documented across platforms/versions.
+    // We try a few common schemes. First one that can open wins.
+    const candidates = [
+      `thinkorswim://quote?symbol=${encodeURIComponent(sym)}`,
+      `tos://quote?symbol=${encodeURIComponent(sym)}`,
+      `thinkorswim://symbol/${encodeURIComponent(sym)}`,
+      `tos://symbol/${encodeURIComponent(sym)}`,
+    ];
+
+    try {
+      for (const url of candidates) {
+        // canOpenURL often requires allowlisting schemes on iOS (see note below)
+        // If canOpenURL throws, we still try openURL.
+        let can = false;
+        try {
+          can = await Linking.canOpenURL(url);
+        } catch {}
+
+        if (can) {
+          await Linking.openURL(url);
+          return;
+        }
+      }
+
+      // If canOpenURL returns false for everything, try opening the first candidate anyway
+      // (some Android builds return false but still open).
+      try {
+        await Linking.openURL(candidates[0]);
+        return;
+      } catch {}
+
+      // Final fallback: copy symbol so you can paste in TOS instantly
+      if (Clipboard?.setStringAsync) await Clipboard.setStringAsync(sym);
+      else if (Clipboard?.setString) Clipboard.setString(sym);
+
+      Alert.alert(
+        "Thinkorswim not available",
+        `Couldn't deep-link into Thinkorswim. I copied ${sym} to your clipboard so you can paste it in TOS search.`
+      );
+    } catch (e) {
+      Alert.alert("Link error", String(e?.message || e));
+    }
+  };
+
   const openInThinkorswim = (symbol) => {
     // thinkorswim deep link format: tos://symbol?value=AAPL
     const tosUrl = `tos://symbol?value=${encodeURIComponent(symbol)}`;
@@ -2975,7 +3024,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
                 : String(Math.round(r.volume));
 
             return (
-              <TouchableOpacity key={`${universeView}-${sym}`} style={styles.universeRow} onPress={() => openInThinkorswim(sym)} activeOpacity={0.85}>  
+              <TouchableOpacity key={`${universeView}-${sym}`} style={styles.universeRow} onPress={() => openThinkorswim(sym)} activeOpacity={0.85}>  
                 <Text style={[styles.universeCell, styles.universeCellSym, styles.universeLink]}>{sym}</Text>
                 <Text style={[styles.universeCell, { flex: 2.1 }]} numberOfLines={1}>
                   {name}
