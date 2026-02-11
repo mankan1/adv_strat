@@ -1069,6 +1069,47 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     }
   };
 
+  const openThinkorswimSmart = async (symbol) => {
+    const sym = String(symbol || "").toUpperCase().trim();
+    if (!sym) return;
+  
+    // ✅ Always copy symbol so desktop workflow is 1 paste away
+    try {
+      if (Clipboard?.setStringAsync) await Clipboard.setStringAsync(sym);
+      else if (Clipboard?.setString) Clipboard.setString(sym);
+    } catch {}
+  
+    // ✅ Mobile deep-links (best effort)
+    const candidates = [
+      `thinkorswim://quote?symbol=${encodeURIComponent(sym)}`,
+      `tos://quote?symbol=${encodeURIComponent(sym)}`,
+      `thinkorswim://symbol/${encodeURIComponent(sym)}`,
+      `tos://symbol/${encodeURIComponent(sym)}`,
+    ];
+  
+    // ✅ If running on mobile, try to open app
+    if (Platform.OS !== "web") {
+      for (const url of candidates) {
+        try {
+          const can = await Linking.canOpenURL(url);
+          if (can) {
+            await Linking.openURL(url);
+            return;
+          }
+        } catch {}
+      }
+    }
+  
+    // ✅ Desktop-friendly fallback: open browser page + symbol already copied
+    // Pick ONE fallback. Schwab/TradingView/Yahoo all work.
+    const webFallback = `https://finance.yahoo.com/quote/${encodeURIComponent(sym)}`;
+    try {
+      await Linking.openURL(webFallback);
+    } catch (e) {
+      Alert.alert("Open failed", `Copied ${sym} — paste it into TOS Desktop search.`);
+    }
+  };
+
   const openInThinkorswim = (symbol) => {
     // thinkorswim deep link format: tos://symbol?value=AAPL
     const tosUrl = `tos://symbol?value=${encodeURIComponent(symbol)}`;
@@ -3024,7 +3065,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
                 : String(Math.round(r.volume));
 
             return (
-              <TouchableOpacity key={`${universeView}-${sym}`} style={styles.universeRow} onPress={() => openThinkorswim(sym)} activeOpacity={0.85}>  
+              <TouchableOpacity key={`${universeView}-${sym}`} style={styles.universeRow} onPress={() => openThinkorswimSmart(sym)} activeOpacity={0.85}>  
                 <Text style={[styles.universeCell, styles.universeCellSym, styles.universeLink]}>{sym}</Text>
                 <Text style={[styles.universeCell, { flex: 2.1 }]} numberOfLines={1}>
                   {name}
