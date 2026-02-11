@@ -1020,6 +1020,32 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
     Linking.openURL(url).catch(() => Alert.alert("Link error", "Could not open Yahoo Finance."));
   };
 
+  const openInThinkorswim = (symbol) => {
+    // thinkorswim deep link format: tos://symbol?value=AAPL
+    const tosUrl = `tos://symbol?value=${encodeURIComponent(symbol)}`;
+    const webFallback = `https://www.tdameritrade.com/investment-products/options-trading.html?symbol=${encodeURIComponent(symbol)}`;
+    
+    Linking.canOpenURL(tosUrl)
+      .then((supported) => {
+        if (supported) {
+          return Linking.openURL(tosUrl);
+        } else {
+          // Fallback to TD Ameritrade web if thinkorswim app not installed
+          return Linking.openURL(webFallback);
+        }
+      })
+      .catch(() => {
+        Alert.alert(
+          "thinkorswim not available",
+          "Install the thinkorswim mobile app or opening in browser.",
+          [
+            { text: "Cancel", style: "cancel" },
+            { text: "Open in Browser", onPress: () => Linking.openURL(webFallback) }
+          ]
+        );
+      });
+  };
+
   const isRateLimitError = (errOrText) => {
     const msg = String(errOrText || "").toLowerCase();
     return msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("429") || msg.includes("limit exceeded");
@@ -2949,7 +2975,7 @@ const SmartOpportunitiesAlpacaUniverse = ({ backendUrl = DEFAULT_BACKEND }) => {
                 : String(Math.round(r.volume));
 
             return (
-              <TouchableOpacity key={`${universeView}-${sym}`} style={styles.universeRow} onPress={() => openYahoo(sym)} activeOpacity={0.85}>
+              <TouchableOpacity key={`${universeView}-${sym}`} style={styles.universeRow} onPress={() => openInThinkorswim(sym)} activeOpacity={0.85}>  
                 <Text style={[styles.universeCell, styles.universeCellSym, styles.universeLink]}>{sym}</Text>
                 <Text style={[styles.universeCell, { flex: 2.1 }]} numberOfLines={1}>
                   {name}
